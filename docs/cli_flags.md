@@ -7,6 +7,9 @@ Generate synthetic payment data (auto-analyzes CSV output).
 
 - `--scale <N>`: Target number of payment records. Default `1200`.
 - `--seed <N>`: RNG seed for repeatable output. Default: random.
+- `--psps <N>`: Number of PSPs to simulate. Default `1`.
+- `--multi-account-ratio <F>`: Share of payees with account identifier + BIC pairs. Default `0.15`.
+- `--non-eu-payee-ratio <F>`: Share of payees outside the EU. Default `0.10`.
 - `--output <PATH>`: Output file path. Default `data/synthetic/payments.csv`.
 
 Example:
@@ -35,12 +38,33 @@ Render CESOP PaymentData XML from CSV input.
 
 - `--input <PATH>`: Input CSV file. Default `data/synthetic/payments.csv`.
 - `--output-dir <PATH>`: Output directory for XML files. Default `data/output`.
-- `--transmitting-country <MS>`: Tax administration Member State. Default `DE`.
+- `--transmitting-country <MS|auto>`: Tax administration Member State. Default `auto`
+  (derive from reporting PSP BIC).
 
 Example:
 ```sh
 cesop-demo render --input data/synthetic/payments.csv --output-dir data/output
 ```
+
+Output files are named:
+`cesop_<YEAR>_Q<QUARTER>_<MS>_<PSP_ID>.xml`
+
+## `cesop-demo preflight`
+Validate CSV input against mandatory field + syntax rules and reportability stats.
+
+- `--input <PATH>`: Input CSV file. Default `data/synthetic/payments.csv`.
+- `--threshold <N>`: Threshold for "over". Default `25`.
+- `--include-refunds`: Include refunds in threshold counting. Default `false`.
+
+## `cesop-demo corrupt`
+Create an intentionally invalid CSV by injecting payee- and transaction-level
+errors for demo purposes.
+
+- `--input <PATH>`: Input CSV file. Default `data/synthetic/payments.csv`.
+- `--output <PATH>`: Output CSV file. Default `data/synthetic/payments_invalid.csv`.
+- `--payee-error-rate <F>`: Share of payees to corrupt. Default `0.02`.
+- `--tx-error-rate <F>`: Share of transactions to corrupt. Default `0.01`.
+- `--seed <N>`: RNG seed for repeatable output.
 
 ## `cesop-demo validate`
 Run the CESOP Validation Module against an XML file.
@@ -52,7 +76,7 @@ Run the CESOP Validation Module against an XML file.
 
 Example:
 ```sh
-cesop-demo validate --input data/output/cesop_2025_Q4.xml --output data/output/validation.xml
+cesop-demo validate --input data/output --output data/output/validation.xml
 ```
 
 ## Logging environment variables

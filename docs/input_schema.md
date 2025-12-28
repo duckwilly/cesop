@@ -31,7 +31,15 @@ into CESOP XML. The same fields are used for CSV, JSON, or JSONL output.
 
 ## Notes
 - Cross-border logic is determined by `payer_country` != `payee_country`.
+- Threshold logic is per Member State (payee location) and per payee identifier;
+  if multiple identifiers are known for a payee, counts aggregate per payee.
+- A single `payee_id` may appear with multiple `payee_account` values to model
+  multiple identifiers; all of them are reported under the same payee.
+- `payee_country` may be non-EU (third country/territory) to model cross-border
+  reporting outside the Union.
 - The generator intentionally includes payees above and below the 25-payment
   threshold to showcase CESOP eligibility rules.
+- CSV inputs may contain multiple PSPs; rendering groups reports by PSP and
+  quarter automatically.
 - If `data/reference/company_cores.txt` exists, the generator draws a core name
   from that list (one per line) before applying suffixes and legal endings.

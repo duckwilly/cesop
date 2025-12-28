@@ -1,8 +1,11 @@
 mod analysis;
 mod cesop_xml;
+mod corrupt;
 mod generator;
 mod logging;
 mod models;
+mod preflight;
+mod reference;
 mod util;
 mod validation;
 
@@ -31,6 +34,8 @@ enum Command {
     Generate(GenerateArgs),
     Analyze(AnalyzeArgs),
     Render(RenderArgs),
+    Corrupt(CorruptArgs),
+    Preflight(PreflightArgs),
     Validate(ValidateArgs),
 }
 
@@ -40,6 +45,12 @@ struct GenerateArgs {
     scale: usize,
     #[arg(long)]
     seed: Option<u64>,
+    #[arg(long, default_value_t = 1)]
+    psps: usize,
+    #[arg(long, default_value_t = 0.15)]
+    multi_account_ratio: f64,
+    #[arg(long, default_value_t = 0.10)]
+    non_eu_payee_ratio: f64,
     #[arg(long, default_value = "data/synthetic/payments.csv")]
     output: PathBuf,
 }
@@ -60,8 +71,32 @@ struct RenderArgs {
     input: PathBuf,
     #[arg(long, default_value = "data/output")]
     output_dir: PathBuf,
-    #[arg(long, default_value = "DE")]
+    #[arg(long, default_value = "auto")]
     transmitting_country: String,
+}
+
+#[derive(Parser)]
+struct CorruptArgs {
+    #[arg(long, default_value = "data/synthetic/payments.csv")]
+    input: PathBuf,
+    #[arg(long, default_value = "data/synthetic/payments_invalid.csv")]
+    output: PathBuf,
+    #[arg(long, default_value_t = 0.02)]
+    payee_error_rate: f64,
+    #[arg(long, default_value_t = 0.01)]
+    tx_error_rate: f64,
+    #[arg(long)]
+    seed: Option<u64>,
+}
+
+#[derive(Parser)]
+struct PreflightArgs {
+    #[arg(long, default_value = "data/synthetic/payments.csv")]
+    input: PathBuf,
+    #[arg(long, default_value_t = 25)]
+    threshold: usize,
+    #[arg(long, default_value_t = false)]
+    include_refunds: bool,
 }
 
 #[derive(Parser)]
@@ -93,6 +128,8 @@ fn run() -> Result<(), String> {
         Command::Generate(args) => run_generate(args),
         Command::Analyze(args) => run_analyze(args),
         Command::Render(args) => run_render(args),
+        Command::Corrupt(args) => run_corrupt(args),
+        Command::Preflight(args) => run_preflight(args),
         Command::Validate(args) => run_validate(args),
     }
 }
@@ -108,8 +145,11 @@ fn run_generate(args: GenerateArgs) -> Result<(), String> {
         micro_payees: derived.micro_payees,
         near_threshold_payees: derived.near_threshold_payees,
         large_payees: derived.large_payees,
+        psps: args.psps,
         cross_border_ratio: 0.8,
         refund_ratio: 0.02,
+        multi_account_ratio: args.multi_account_ratio,
+        non_eu_payee_ratio: args.non_eu_payee_ratio,
         year,
         quarter,
     };
@@ -121,6 +161,12 @@ fn run_generate(args: GenerateArgs) -> Result<(), String> {
         config.micro_payees,
         config.near_threshold_payees,
         config.large_payees
+    );
+    log::info!(
+        "Generator options: psps={}, multi_account_ratio(account+BIC)={}, non_eu_payee_ratio={}",
+        config.psps,
+        config.multi_account_ratio,
+        config.non_eu_payee_ratio
     );
 
     log::info!(
@@ -189,6 +235,99 @@ fn run_render(args: RenderArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn run_corrupt(args: CorruptArgs) -> Result<(), String> {
+    let seed = args.seed.unwrap_or_else(random_seed);
+    let summary = corrupt::corrupt_csv(
+        &args.input,
+        &args.output,
+        args.payee_error_rate,
+        args.tx_error_rate,
+        seed,
+    )?;
+
+    emit_info_line(&format!(
+        "Corrupt: input={} output={} seed={}",
+        args.input.display(),
+        args.output.display(),
+        seed
+    ));
+    emit_info_line(&format!(
+        "Corrupt payee errors: targeted={} name_missing={} country_invalid={} account_type_invalid={} account_value_invalid={}",
+        summary.payees_targeted,
+        summary.payee_name_missing,
+        summary.payee_country_invalid,
+        summary.account_type_invalid,
+        summary.account_value_invalid
+    ));
+    emit_info_line(&format!(
+        "Corrupt tx errors: currency_invalid={} payer_country_invalid={} payer_source_invalid={}",
+        summary.tx_currency_invalid,
+        summary.tx_payer_country_invalid,
+        summary.tx_payer_source_invalid
+    ));
+
+    Ok(())
+}
+
+fn run_preflight(args: PreflightArgs) -> Result<(), String> {
+    let report = preflight::preflight_csv(&args.input, args.threshold, args.include_refunds)?;
+
+    emit_info_line(&format!(
+        "Preflight (threshold >{}): records={} cross_border={} payees={} payees_over_threshold={}",
+        report.threshold,
+        report.total_records,
+        report.cross_border_records,
+        report.total_payees,
+        report.payees_over_threshold
+    ));
+    emit_info_line(&format!(
+        "Preflight issues: errors={} warnings={}",
+        report.error_count(),
+        report.warning_count()
+    ));
+
+    emit_issue_summary("error", &report.issues, preflight::IssueLevel::Error);
+    emit_issue_summary("warning", &report.issues, preflight::IssueLevel::Warning);
+
+    if report.error_count() > 0 {
+        return Err(format!(
+            "preflight failed with {} error(s)",
+            report.error_count()
+        ));
+    }
+
+    Ok(())
+}
+
+fn emit_issue_summary(
+    label: &str,
+    issues: &[preflight::PreflightIssue],
+    level: preflight::IssueLevel,
+) {
+    let mut counts = std::collections::HashMap::new();
+    for issue in issues.iter().filter(|issue| issue.level == level) {
+        *counts.entry(issue.message.as_str()).or_insert(0usize) += 1;
+    }
+    if counts.is_empty() {
+        return;
+    }
+
+    let mut items: Vec<(&str, usize)> = counts.into_iter().collect();
+    items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+    let max_items = 5usize;
+    for (message, count) in items.iter().take(max_items) {
+        emit_info_line(&format!("Preflight {}s: {} = {}", label, message, count));
+    }
+    if items.len() > max_items {
+        emit_info_line(&format!(
+            "Preflight {}s: {} additional issue types not shown",
+            label,
+            items.len() - max_items
+        ));
+    }
+}
+
 fn run_validate(args: ValidateArgs) -> Result<(), String> {
     let result = match validate_with_vm(&args.java, &args.jar, &args.input) {
         Ok(result) => result,
@@ -254,15 +393,15 @@ struct DerivedGeneration {
 }
 
 fn derive_scaled_generation(records: usize) -> Result<DerivedGeneration, String> {
-    // Aim for ~30 transactions per payee to keep a mix around the 25 threshold.
-    const TARGET_AVG: f64 = 30.0;
+    // Aim for ~24 transactions per payee to keep most payees below threshold.
+    const TARGET_AVG: f64 = 24.0;
     let mut payees = ((records as f64) / TARGET_AVG).ceil() as usize;
     if payees == 0 {
         payees = 1;
     }
 
     for _ in 0..10_000 {
-        let (micro, near, large) = ratio_counts(payees);
+        let (micro, near, large) = ratio_counts(payees, records);
         let (min_total, max_total) = record_bounds(payees, micro, near, large);
 
         if records < min_total {
@@ -289,10 +428,17 @@ fn derive_scaled_generation(records: usize) -> Result<DerivedGeneration, String>
     Err("could not derive a valid payee mix for the requested scale".to_string())
 }
 
-fn ratio_counts(payees: usize) -> (usize, usize, usize) {
-    let mut micro = ((payees as f64) * 0.20).round() as usize;
-    let mut near = ((payees as f64) * 0.15).round() as usize;
-    let mut large = ((payees as f64) * 0.10).round() as usize;
+fn ratio_counts(payees: usize, records: usize) -> (usize, usize, usize) {
+    const MICRO_RATIO: f64 = 0.25;
+    const NEAR_RATIO: f64 = 0.10;
+    const OVER_THRESHOLD_PER_RECORD: f64 = 0.0025; // 250 per 100k records
+
+    let mut micro = ((payees as f64) * MICRO_RATIO).round() as usize;
+    let mut near = ((payees as f64) * NEAR_RATIO).round() as usize;
+    let mut large = ((records as f64) * OVER_THRESHOLD_PER_RECORD).round() as usize;
+    if large > payees {
+        large = payees;
+    }
 
     while micro + near + large > payees {
         if micro > 0 {
@@ -323,15 +469,15 @@ fn record_bounds(
 
     let min_total = micro * 1
         + small * 6
-        + mid * 30
+        + mid * 16
         + near_below * 24
         + near_above * 26
         + large * 80;
     let max_total = micro * 5
         + small * 20
-        + mid * 50
+        + mid * 24
         + near_below * 25
-        + near_above * 30
+        + near_above * 27
         + large * 140;
 
     (min_total, max_total)
