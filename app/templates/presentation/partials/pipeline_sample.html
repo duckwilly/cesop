@@ -1,0 +1,9 @@
+<script id="pipelinePayload" type="application/json">
+  {{ payload | tojson }}
+</script>
+<span class="status-text" id="sampleStatusText" hx-swap-oob="true">{{ status_label }}</span>
+<div class="stat-value" id="sampleRows" hx-swap-oob="true">{{ rows_label }}</div>
+<div class="stat-value" id="sampleSize" hx-swap-oob="true">{{ size_label }}</div>
+<strong id="sampleSeed" hx-swap-oob="true">{{ seed_label }}</strong>
+<span class="status-text" id="generatorStatusText" hx-swap-oob="true">{{ generator_message }}</span>
+<progress id="generatorProgress" max="100" value="{{ progress_value }}" hx-swap-oob="true"></progress>

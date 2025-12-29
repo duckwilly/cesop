@@ -1,7 +1,6 @@
 const sampleState = {
   rows: 10000,
   size: "~2.6 MB",
-  seed: "--",
   payees: 420,
   crossBorder: 8200,
   nonCrossBorder: 1800,
@@ -31,8 +30,7 @@ const steps = [
   {
     id: "raw",
     title: "Raw Ingest",
-    meta: "Sample {rows} rows | Seed {seed}",
-    chips: ["psp export", "multi-license", "Q4 2025"],
+    meta: "{rows} rows loaded",
     preview: {
       type: "csv",
       header: [
@@ -57,15 +55,15 @@ const steps = [
       ],
     },
     rule: {
-      title: "Reporting period and identifiers",
+      title: "Data requirements",
       body:
-        "CESOP requires each payment to be tied to the reporting quarter, PSP, and payee identifiers. We also capture the PSP's licensed Member State footprint to route reporting later.",
+        "CESOP requires payment transactions to include PSP identifiers, payee details, payer location, amount, and timing. This raw data forms the foundation for all downstream processing.",
       list: [
-        "Reportable period = Q4 2025",
-        "PSP identifier must be present",
-        "Representative PSP captured when payee has no account",
-        "Amounts stored in source currency",
-        "Licensed Member States recorded",
+        "PSP identifier (BIC) required",
+        "Payee account and location captured",
+        "Payer Member State for cross-border determination",
+        "Transaction amount and currency",
+        "Date within reporting quarter",
       ],
     },
     metrics: [
@@ -78,7 +76,6 @@ const steps = [
     id: "cross-border",
     title: "Cross-border Filter",
     meta: "{nonCrossBorder} excluded | {crossBorder} remaining",
-    chips: ["scope", "cross-border"],
     preview: {
       type: "csv",
       header: [
@@ -104,13 +101,13 @@ const steps = [
       highlights: [{ row: 1, cols: [2, 3] }],
     },
     rule: {
-      title: "Cross-border definition",
+      title: "Scope determination",
       body:
-        "Only payments where payer and payee are in different Member States are in scope. Domestic transactions are excluded before we decide where reporting is needed.",
+        "CESOP reporting applies only to cross-border payments within the EU. Transactions where payer and payee share the same Member State are out of scope.",
       list: [
-        "Use payer and payee locations",
-        "Exclude domestic payments",
-        "Keep cross-border subset",
+        "Compare payer MS vs payee MS",
+        "Same country = domestic = excluded",
+        "Different country = cross-border = in scope",
       ],
     },
     metrics: [
@@ -123,20 +120,20 @@ const steps = [
     id: "threshold",
     title: "Threshold Gate",
     meta: "{reportablePayees} payees over | {reportable} reportable rows",
-    chips: ["aggregation", ">25"],
     preview: {
       type: "text",
       value:
         "PAYEE-00412 (SE) -> 34 payments\nPAYEE-01902 (DE) -> 41 payments\nPAYEE-02311 (IE) -> 29 payments\nPAYEE-03118 (FR) -> 27 payments\nPAYEE-04009 (IE) -> 31 payments\nPAYEE-05031 (SE) -> 26 payments\nPAYEE-05302 (NL) -> 33 payments\nPAYEE-06110 (FR) -> 28 payments",
     },
     rule: {
-      title: "More than 25 cross-border payments",
+      title: "The >25 rule",
       body:
-        "CESOP applies when a PSP services more than 25 cross-border payments to the same payee in a Member State within a quarter. This is where we confirm which jurisdictions actually need reports.",
+        "Reporting obligation triggers when a payee receives more than 25 cross-border payments in a calendar quarter. Count is per payee per Member State.",
       list: [
-        "Count per payee + Member State",
-        "Quarter-based threshold",
-        "Reporting MS list determined",
+        "Aggregate payments by payee",
+        "Group by payee's Member State",
+        "Threshold: >25 payments per quarter",
+        "Below threshold = no reporting required",
       ],
     },
     metrics: [
@@ -149,7 +146,6 @@ const steps = [
     id: "errors",
     title: "Error Detection",
     meta: "Reportable scan | {errors} issues flagged",
-    chips: ["schema checks", "rules"],
     preview: {
       type: "csv",
       header: [
@@ -179,14 +175,14 @@ const steps = [
       ],
     },
     rule: {
-      title: "Mandatory identifiers and code lists",
+      title: "Data quality checks",
       body:
-        "Country codes, currencies, and account identifiers must match CESOP code lists. Invalid values are flagged before correction so they can be explained and fixed.",
+        "CESOP schema enforces strict code lists. Invalid values will fail official validation. Detecting issues early allows for correction before XML generation.",
       list: [
-        "Country codes must be ISO 3166-1 alpha-2",
-        "Currency must be ISO 4217",
-        "Account identifiers are single or paired with BIC",
-        "Representative PSP required when no payee account",
+        "Country codes: ISO 3166-1 alpha-2",
+        "Currency codes: ISO 4217",
+        "Date formats: YYYY-MM-DD",
+        "Account identifiers: IBAN or other standard",
       ],
     },
     metrics: [
@@ -199,7 +195,6 @@ const steps = [
     id: "corrected",
     title: "Correction",
     meta: "{corrections} fixes applied | audit log saved",
-    chips: ["normalization", "diff"],
     preview: {
       type: "diff",
       recordId: "PAYEE-01902",
@@ -210,13 +205,14 @@ const steps = [
       ],
     },
     rule: {
-      title: "Normalization and correction",
+      title: "Audit trail",
       body:
-        "Corrections apply deterministic rules so the final XML is clean. Every change is logged for transparency and can be reviewed by auditors.",
+        "Every correction is logged with before and after values. Deterministic rules ensure consistent, reproducible fixes. Full transparency for compliance review.",
       list: [
-        "Normalize formats and code lists",
-        "Fill missing fields when derivable",
-        "Store before/after values",
+        "Each change recorded as a diff",
+        "Original values preserved",
+        "Correction rules are deterministic",
+        "Complete audit log exportable",
       ],
     },
     metrics: [
@@ -229,7 +225,6 @@ const steps = [
     id: "xml",
     title: "XML Generation",
     meta: "{reports} file(s) | {memberStates} reporting MS",
-    chips: ["PaymentData", "v6.00"],
     preview: {
       type: "xml",
       fileList: [
@@ -243,14 +238,14 @@ const steps = [
       value: `<?xml version="1.0" encoding="UTF-8"?>\n<CESOP xmlns="urn:ec.europa.eu:taxud:fiscalis:cesop:v1" xmlns:cm="urn:eu:taxud:commontypes:v1" xmlns:iso="urn:eu:taxud:isotypes:v1" version="4.03">\n  <MessageSpec>\n    <TransmittingCountry>DK</TransmittingCountry>\n    <MessageType>PMT</MessageType>\n    <MessageTypeIndic>CESOP100</MessageTypeIndic>\n    <MessageRefId>67f2a1c9-3ab9-4f2c-9f1b-1d4a8bcd27e6</MessageRefId>\n    <ReportingPeriod>\n      <Quarter>4</Quarter>\n      <Year>2025</Year>\n    </ReportingPeriod>\n    <Timestamp>2025-12-31T23:59:59Z</Timestamp>\n  </MessageSpec>\n  <PaymentDataBody>\n    <ReportingPSP>\n      <PSPId PSPIdType="BIC">MLIFDKV9</PSPId>\n      <Name nameType="BUSINESS">Northshore Payments</Name>\n    </ReportingPSP>\n    <ReportedPayee>\n      <Name nameType="BUSINESS">Silver Trading BV</Name>\n      <Country>DK</Country>\n      <Address>\n        <cm:CountryCode>DK</cm:CountryCode>\n        <cm:AddressFree>Market St 12, 2100 Copenhagen</cm:AddressFree>\n      </Address>\n      <TAXIdentification/>\n      <AccountIdentifier CountryCode="DK" type="IBAN">DK5000400440116243</AccountIdentifier>\n      <ReportedTransaction>\n        <TransactionIdentifier>PAY-00412-01</TransactionIdentifier>\n        <DateTime transactionDateType="CESOP701">2025-10-04T10:04:22Z</DateTime>\n        <Amount currency="EUR">159.98</Amount>\n        <PaymentMethod>\n          <cm:PaymentMethodType>Card payment</cm:PaymentMethodType>\n        </PaymentMethod>\n        <InitiatedAtPhysicalPremisesOfMerchant>true</InitiatedAtPhysicalPremisesOfMerchant>\n        <PayerMS PayerMSSource="IBAN">SE</PayerMS>\n      </ReportedTransaction>\n      <DocSpec>\n        <cm:DocTypeIndic>CESOP1</cm:DocTypeIndic>\n        <cm:DocRefId>9e0d9d12-5e76-4f1a-92d7-3f2e5a4c8d3f</cm:DocRefId>\n      </DocSpec>\n    </ReportedPayee>\n  </PaymentDataBody>\n</CESOP>`,
     },
     rule: {
-      title: "Schema structure and ordering",
+      title: "Schema compliance",
       body:
-        "The XML must follow the CESOP PaymentData schema in the exact element order. Namespace versioning is critical for validation and submission.",
+        "Generated XML follows the official CESOP PaymentData schema. Correct element ordering, namespace declarations, and data types are enforced.",
       list: [
-        "Namespace CESOP v4.03 (PaymentData)",
-        "Elements ordered per schema",
-        "Representative PSP when no account is present",
-        "One file per licensed Member State",
+        "CESOP PaymentData v4.03 schema",
+        "Proper XML namespace declarations",
+        "Elements in required order",
+        "One file per reporting Member State",
       ],
     },
     metrics: [
@@ -263,20 +258,20 @@ const steps = [
     id: "validation",
     title: "Validation",
     meta: "Pass rate {passRate} | {validationTime}",
-    chips: ["official VM", "audit"],
     preview: {
       type: "text",
       value:
         "Validation: PASS\nSchema checks: 134\nBusiness rules: 27\nWarnings: 2 (precision normalized)\nValidated files: 6\nErrors: 0\nOutput: validation.xml\nDuration: 1.6s",
     },
     rule: {
-      title: "Validation and traceability",
+      title: "Official validation",
       body:
-        "The official CESOP Validation Module confirms structural integrity and business rule compliance. Validation output is stored alongside XML for audit.",
+        "The EU-provided CESOP Validation Module performs comprehensive checks. Passing validation confirms files are ready for submission to tax authorities.",
       list: [
-        "Schema compliance checks",
-        "Business rule validation",
-        "Validation XML retained",
+        "XML schema validation",
+        "Business rule checks",
+        "Cross-field consistency",
+        "Validation report generated",
       ],
     },
     metrics: [
@@ -287,22 +282,22 @@ const steps = [
   },
   {
     id: "outro",
-    title: "Outro",
-    meta: "Demo complete | Next steps",
-    chips: ["handoff", "links"],
+    title: "Complete",
+    meta: "Pipeline finished | Files ready",
     preview: {
       type: "text",
       value:
-        "Next steps\n- Return to main website\n- View project GitHub\n- Review generated XML\n- Explore validation output\n- Contact for a live walkthrough\n- Extend with live API\n- Swap in real PSP data",
+        "Pipeline complete\nDeliverables:\n  - 6 validated XML files\n  - Correction audit log\n  - Validation reports\nReady for CESOP portal submission",
     },
     rule: {
-      title: "Wrap-up and next actions",
+      title: "Production ready",
       body:
-        "Use the finished XML and validation outputs to tell the CESOP readiness story. The same pipeline can plug into a live PSP feed.",
+        "This pipeline transforms raw PSP data into validated CESOP reports. The same process scales to production volumes with real transaction data.",
       list: [
-        "Connect to production exports",
-        "Automate quarterly submissions",
-        "Maintain correction audit trails",
+        "Connect to live PSP exports",
+        "Schedule quarterly runs",
+        "Archive audit trails",
+        "Submit via CESOP portal",
       ],
     },
     metrics: [
@@ -344,22 +339,17 @@ const stepElements = Array.from(document.querySelectorAll(".step"));
 const timelineItems = Array.from(document.querySelectorAll(".timeline-item"));
 const previewTitle = document.getElementById("previewTitle");
 const previewMeta = document.getElementById("previewMeta");
-const previewChips = document.getElementById("previewChips");
 const previewCode = document.getElementById("previewCode");
 const previewMetrics = document.getElementById("previewMetrics");
 const ruleTitle = document.getElementById("ruleTitle");
 const ruleBody = document.getElementById("ruleBody");
 const ruleList = document.getElementById("ruleList");
 const previewPanel = document.querySelector(".preview-panel");
-const ruleLink = document.getElementById("ruleLink");
 
 const generateBtn = document.getElementById("generateSample");
-const replayBtn = document.getElementById("replayPipeline");
 const sampleStatus = document.getElementById("sampleStatus");
 const sampleRows = document.getElementById("sampleRows");
 const sampleSize = document.getElementById("sampleSize");
-const sampleSeed = document.getElementById("sampleSeed");
-const generatorBadge = document.getElementById("generatorBadge");
 const generatorStatus = document.getElementById("generatorStatus");
 const generatorProgress = document.getElementById("generatorProgress");
 const flowTotal = document.getElementById("flowTotal");
@@ -370,6 +360,9 @@ const flowBelowThreshold = document.getElementById("flowBelowThreshold");
 const flowXmlFiles = document.getElementById("flowXmlFiles");
 const flowMemberStates = document.getElementById("flowMemberStates");
 const flowSteps = Array.from(document.querySelectorAll(".flow-step"));
+const flowTotalBar = document.getElementById("flowTotalBar");
+const flowCrossBorderBar = document.getElementById("flowCrossBorderBar");
+const flowReportableBar = document.getElementById("flowReportableBar");
 const stepsContainer = document.querySelector(".steps");
 const detailGrid = document.querySelector(".detail-grid");
 
@@ -638,13 +631,6 @@ function setPreview(step) {
   previewTitle.textContent = step.title;
   previewMeta.textContent = fillTemplate(step.meta);
 
-  previewChips.innerHTML = "";
-  step.chips.forEach((chip) => {
-    const span = document.createElement("span");
-    span.textContent = chip;
-    previewChips.appendChild(span);
-  });
-
   previewCode.classList.toggle("csv-snippet", step.preview.type === "csv");
   previewCode.classList.toggle("diff-snippet", step.preview.type === "diff");
 
@@ -768,7 +754,6 @@ function initPreviewOffset() {
 function updateSampleDisplay() {
   sampleRows.textContent = formatValue(sampleState.rows);
   sampleSize.textContent = sampleState.size;
-  sampleSeed.textContent = sampleState.seed;
   updateFlowDisplay();
   updatePreviewOffset();
 }
@@ -781,10 +766,19 @@ function updateFlowDisplay() {
   if (flowTotal) {
     flowTotal.textContent = formatValue(sampleState.rows);
   }
+  if (flowTotalBar) {
+    flowTotalBar.style.width = "100%";
+  }
   if (flowCrossBorder) {
     flowCrossBorder.textContent = canReveal("cross-border")
       ? formatValue(sampleState.crossBorder)
       : "--";
+  }
+  if (flowCrossBorderBar) {
+    const pct = canReveal("cross-border")
+      ? Math.round((sampleState.crossBorder / sampleState.rows) * 100)
+      : 0;
+    flowCrossBorderBar.style.width = `${pct}%`;
   }
   if (flowExcluded) {
     flowExcluded.textContent = canReveal("cross-border")
@@ -795,6 +789,12 @@ function updateFlowDisplay() {
     flowReportable.textContent = canReveal("threshold")
       ? formatValue(sampleState.reportable)
       : "--";
+  }
+  if (flowReportableBar) {
+    const pct = canReveal("threshold")
+      ? Math.round((sampleState.reportable / sampleState.rows) * 100)
+      : 0;
+    flowReportableBar.style.width = `${pct}%`;
   }
   if (flowBelowThreshold) {
     flowBelowThreshold.textContent = canReveal("threshold")
@@ -830,9 +830,6 @@ function applyPipelineData(data) {
     return;
   }
 
-  if (data.seed !== undefined) {
-    sampleState.seed = String(data.seed);
-  }
   if (data.rows !== undefined) {
     sampleState.rows = data.rows;
   }
@@ -935,7 +932,7 @@ function beginGeneration() {
     return false;
   }
   generateBtn.disabled = true;
-  generatorBadge.textContent = "Generating";
+  generateBtn.classList.add("is-loading");
   generatorStatus.textContent = "Generating 10,000 rows...";
   sampleStatus.textContent = "Generating...";
   generatorProgress.value = 0;
@@ -943,11 +940,11 @@ function beginGeneration() {
 }
 
 function completeGeneration(message, statusLabel) {
-  generatorBadge.textContent = "Ready";
   generatorStatus.textContent = message;
   sampleStatus.textContent = statusLabel || "Ready";
   generatorProgress.value = 100;
   generateBtn.disabled = false;
+  generateBtn.classList.remove("is-loading");
   updateSampleDisplay();
   setActiveStep(activeStepId);
 }
@@ -999,20 +996,7 @@ async function generateSample() {
   }
 }
 
-async function replayPipeline() {
-  replayBtn.disabled = true;
-  for (const step of steps) {
-    const target = document.getElementById(`step-${step.id}`);
-    if (target) {
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-    }
-  }
-  replayBtn.disabled = false;
-}
-
 generateBtn.addEventListener("click", generateSample);
-replayBtn.addEventListener("click", replayPipeline);
 
 updateSampleDisplay();
 setActiveStep(activeStepId);
@@ -1021,8 +1005,21 @@ initScrollTracking();
 initTimelineNav();
 initPreviewOffset();
 updateStackPadding();
-generateSample();
 
-if (ruleLink) {
-  ruleLink.href = "/docs/business_rules.md";
+const cesopInfo = document.getElementById("cesopInfo");
+const toggleCesopInfo = document.getElementById("toggleCesopInfo");
+const closeCesopInfo = document.getElementById("closeCesopInfo");
+
+function toggleCesopPanel() {
+  if (cesopInfo) {
+    cesopInfo.classList.toggle("is-open");
+  }
+}
+
+if (toggleCesopInfo) {
+  toggleCesopInfo.addEventListener("click", toggleCesopPanel);
+}
+
+if (closeCesopInfo) {
+  closeCesopInfo.addEventListener("click", toggleCesopPanel);
 }

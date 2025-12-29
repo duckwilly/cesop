@@ -42,7 +42,15 @@ pub fn resolve_payee_country(record: &PaymentRecord) -> Result<String, String> {
         {
             return Ok(country);
         }
-        return Err("payee account identifier does not encode country".to_string());
+        if let Some(psp_id) = record.payee_psp_id.as_deref() {
+            if let Some(country) = bic_country_code(psp_id) {
+                return Ok(country);
+            }
+        }
+        return Err(
+            "payee account identifier does not encode country and payee PSP BIC is missing"
+                .to_string(),
+        );
     }
     if let Some(psp_id) = record.payee_psp_id.as_deref() {
         if let Some(country) = bic_country_code(psp_id) {

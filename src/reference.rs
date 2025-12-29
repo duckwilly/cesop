@@ -50,3 +50,16 @@ pub fn iban_length(country: &str) -> Option<usize> {
 pub fn is_eu_member_state(code: &str) -> bool {
     EU_MEMBER_STATES.iter().any(|ms| *ms == code)
 }
+
+pub fn currency_for_country(country: &str) -> &'static str {
+    match country {
+        "BG" => "BGN",
+        "CZ" => "CZK",
+        "DK" => "DKK",
+        "HU" => "HUF",
+        "PL" => "PLN",
+        "RO" => "RON",
+        "SE" => "SEK",
+        _ => "EUR",
+    }
+}

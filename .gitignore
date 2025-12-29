@@ -34,6 +34,7 @@ __pycache__/
 
 /plan.md
 /spec/
+/CLAUDE.md
 
 # Documentation conversions (keep source .doc/.docx/.pdf)
 /docs/**/*.html

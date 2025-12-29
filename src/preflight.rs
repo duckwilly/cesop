@@ -280,14 +280,16 @@ fn is_valid_amount(amount: &str) -> bool {
         Some(part) if !part.is_empty() => part,
         _ => return false,
     };
-    let frac = match parts.next() {
-        Some(part) if part.len() == 2 => part,
-        _ => return false,
-    };
-    if parts.next().is_some() {
+    if !whole.chars().all(|ch| ch.is_ascii_digit()) {
         return false;
     }
-    whole.chars().all(|ch| ch.is_ascii_digit()) && frac.chars().all(|ch| ch.is_ascii_digit())
+    match parts.next() {
+        None => true,
+        Some(frac) if frac.len() <= 2 && frac.chars().all(|ch| ch.is_ascii_digit()) => {
+            parts.next().is_none()
+        }
+        _ => false,
+    }
 }
 
 fn is_valid_currency(code: &str) -> bool {

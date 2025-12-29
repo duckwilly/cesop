@@ -307,7 +307,13 @@ def resolve_payee_country(
     account_id = safe_get(row, payee_account_idx)
     if account_id.strip():
         derived = account_country_code(account_type, account_id)
-        return derived or ""
+        if derived:
+            return derived
+        payee_psp_id = safe_get(row, payee_psp_id_idx)
+        derived = bic_country_code(payee_psp_id)
+        if derived:
+            return derived
+        return ""
     payee_psp_id = safe_get(row, payee_psp_id_idx)
     derived = bic_country_code(payee_psp_id)
     if derived:
@@ -634,7 +640,7 @@ def run_pipeline(scale: int) -> dict:
         else diff_cells or diff_row_count
     )
 
-    raw_rows = clean_rows[:5]
+    raw_rows = clean_rows[:7]
 
     cross_border_rows: list[list[str]] = []
     cross_border_highlights: list[dict] = []

@@ -1,6 +1,6 @@
 use crate::location::bic_country_code;
 use crate::models::PaymentRecord;
-use crate::reference::{iban_length, is_eu_member_state, EU_MEMBER_STATES};
+use crate::reference::{currency_for_country, iban_length, is_eu_member_state, EU_MEMBER_STATES};
 use crate::util::{
     format_amount, iban_check_digits, random_alphanum_upper, random_digits, random_upper_letters,
     slugify,
@@ -756,19 +756,6 @@ fn pick_payer_country<R: Rng + ?Sized>(
         }
     } else {
         payee_country.to_string()
-    }
-}
-
-fn currency_for_country(country: &str) -> &'static str {
-    match country {
-        "BG" => "BGN",
-        "CZ" => "CZK",
-        "DK" => "DKK",
-        "HU" => "HUF",
-        "PL" => "PLN",
-        "RO" => "RON",
-        "SE" => "SEK",
-        _ => "EUR",
     }
 }
 

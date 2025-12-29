@@ -1,6 +1,8 @@
 use crate::location::{account_country_code, bic_country_code, normalize_country_code};
 use crate::models::PaymentRecord;
-use crate::reference::{iban_length, is_eu_member_state, ACCOUNT_IDENTIFIER_TYPES, EU_MEMBER_STATES};
+use crate::reference::{
+    currency_for_country, iban_length, is_eu_member_state, ACCOUNT_IDENTIFIER_TYPES, EU_MEMBER_STATES,
+};
 use crate::util::{iban_check_digits, random_alphanum_upper, random_digits};
 use chrono::Utc;
 use rand::seq::SliceRandom;
@@ -10,7 +12,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CorrectSummary {
     pub total_records: usize,
     pub corrected_records: usize,
@@ -22,23 +24,6 @@ pub struct CorrectSummary {
     pub payer_source_fixed: usize,
     pub currency_fixed: usize,
     pub execution_time_fixed: usize,
-}
-
-impl CorrectSummary {
-    fn new() -> Self {
-        Self {
-            total_records: 0,
-            corrected_records: 0,
-            payee_name_fixed: 0,
-            payee_country_fixed: 0,
-            payee_account_type_fixed: 0,
-            payee_account_value_fixed: 0,
-            payer_country_fixed: 0,
-            payer_source_fixed: 0,
-            currency_fixed: 0,
-            execution_time_fixed: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
@@ -63,7 +48,7 @@ pub fn correct_csv(input: &Path, output: &Path, seed: u64) -> Result<CorrectSumm
     }
 
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let mut summary = CorrectSummary::new();
+    let mut summary = CorrectSummary::default();
     let payee_plans = build_payee_plans(&records, &mut rng);
 
     for record in &mut records {
@@ -418,15 +403,3 @@ fn fallback_payer_country<R: Rng + ?Sized>(psp_id: &str, rng: &mut R) -> String 
     fallback
 }
 
-fn currency_for_country(country: &str) -> &'static str {
-    match country {
-        "BG" => "BGN",
-        "CZ" => "CZK",
-        "DK" => "DKK",
-        "HU" => "HUF",
-        "PL" => "PLN",
-        "RO" => "RON",
-        "SE" => "SEK",
-        _ => "EUR",
-    }
-}

@@ -3,28 +3,28 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>CESOP Pipeline Studio Prototype</title>
+    <meta name="description" content="Interactive demo of a CESOP compliance pipeline: from raw PSP payment data through cross-border filtering, error correction, and XML generation to official EU validation." />
+    <title>CESOP Pipeline Studio</title>
     <link rel="stylesheet" href="{{ url_for('static', path='css/pipeline.css') }}" />
   </head>
   <body>
     <div class="page">
       <header class="hero" id="top">
         <div class="hero-content">
-          <p class="kicker">CESOP Pipeline Studio</p>
-          <h1>Turn raw payments into validated CESOP XML, live.</h1>
+          <p class="kicker">End-to-end compliance</p>
+          <h1>From raw payments to validated CESOP reports</h1>
           <p class="lede">
-            A scroll-driven narrative that shows how a single, multi-license PSP
-            turns raw exports into validated CESOP XML. We start with potentially
-            reportable countries and end with the jurisdictions that actually
-            require reporting. Designed for a portfolio demo that can later be
-            wired to FastAPI + HTMX.
+            Watch 10,000 payment records flow through the complete CESOP pipeline:
+            cross-border filtering, threshold analysis, error correction, XML
+            generation, and official EU validation. Every step is transparent,
+            auditable, and production-ready.
           </p>
           <div class="hero-actions">
             <button class="btn primary" id="generateSample" type="button">
-              Generate 10k sample
+              <span class="btn-text">Generate 10k sample</span>
             </button>
-            <button class="btn ghost" id="replayPipeline" type="button">
-              Replay pipeline
+            <button class="btn ghost" id="toggleCesopInfo" type="button">
+              What's CESOP?
             </button>
           </div>
           <div class="hero-stats">
@@ -46,47 +46,77 @@
         <div class="generator-card">
           <div class="card-header">
             <div>
-              <p class="card-kicker">Live generator</p>
-              <h2>Demo-sized data, real flow</h2>
+              <p class="card-kicker">Sample generator</p>
+              <h2>Realistic PSP data</h2>
             </div>
-            <span class="pill" id="generatorBadge">Ready</span>
           </div>
           <div class="card-body">
             <div class="row">
-              <span>Scale</span>
-              <strong>10,000 rows</strong>
+              <span>Records</span>
+              <strong>10,000 payments</strong>
             </div>
             <div class="row">
-              <span>Target quarter</span>
+              <span>Reporting period</span>
               <strong>Q4 2025</strong>
-            </div>
-            <div class="row">
-              <span>Seed</span>
-              <strong id="sampleSeed">--</strong>
             </div>
             <progress id="generatorProgress" value="0" max="100"></progress>
             <p class="generator-status" id="generatorStatus">
-              Ready to generate a demo sample.
+              Click to generate sample data.
             </p>
             <div class="note">
-              Scenario: one PSP licensed in multiple Member States. Generated
-              data stays on the demo host and only includes synthetic values.
-              Intended for live walk-throughs on regular devices.
+              Simulates a PSP licensed across multiple EU Member States.
+              Includes realistic data quality issues to demonstrate
+              error detection and correction capabilities.
             </div>
           </div>
         </div>
       </header>
+
+      <div class="cesop-info" id="cesopInfo">
+        <div class="cesop-info-inner">
+          <div class="cesop-info-content">
+            <h3>Central Electronic System of Payment Information</h3>
+            <p>
+              CESOP is an EU-wide system that collects payment data from Payment Service Providers
+              to help tax authorities detect VAT fraud in e-commerce. Under the amended VAT Directive,
+              PSPs must report cross-border payment data when a payee receives more than 25 payments
+              in a calendar quarter.
+            </p>
+            <div class="cesop-info-details">
+              <div class="cesop-info-block">
+                <h4>Who reports</h4>
+                <p>Payment Service Providers (banks, payment institutions, e-money issuers) licensed in the EU.</p>
+              </div>
+              <div class="cesop-info-block">
+                <h4>What's reported</h4>
+                <p>Cross-border payment transactions where the payee exceeds 25 payments per quarter per Member State.</p>
+              </div>
+              <div class="cesop-info-block">
+                <h4>When</h4>
+                <p>Quarterly submissions within one month after the end of each calendar quarter.</p>
+              </div>
+            </div>
+            <a class="cesop-info-link" href="https://taxation-customs.ec.europa.eu/taxation/vat/fight-against-vat-fraud/tackling-vat-fraud-e-commerce-cesop_en" target="_blank" rel="noopener">
+              Learn more on the EU CESOP portal
+            </a>
+          </div>
+          <button class="cesop-info-close" id="closeCesopInfo" type="button" aria-label="Close">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M15 5L5 15M5 5l10 10"/>
+            </svg>
+          </button>
+        </div>
+      </div>
 
       <main class="pipeline">
         <section class="preview-dock" aria-label="Live data preview">
           <div class="panel preview-panel">
             <div class="panel-header">
               <div>
-                <p class="panel-kicker">Data preview</p>
+                <p class="panel-kicker">Live output</p>
                 <h3 id="previewTitle">Raw Ingest</h3>
                 <p class="panel-meta" id="previewMeta"></p>
               </div>
-              <div class="panel-chips" id="previewChips"></div>
             </div>
             <pre id="previewCode" aria-live="polite"></pre>
             <div class="metrics" id="previewMetrics"></div>
@@ -95,20 +125,23 @@
 
         <aside class="timeline">
           <div class="flow-card" id="flowCard">
-            <p class="flow-title">Record flow</p>
+            <p class="flow-title">Data funnel</p>
             <div class="flow-steps">
               <div class="flow-step" data-flow="raw">
                 <span>Ingested</span>
                 <strong id="flowTotal">10,000</strong>
+                <div class="flow-bar"><div class="flow-bar-fill" id="flowTotalBar" style="width: 100%"></div></div>
               </div>
               <div class="flow-step" data-flow="cross-border">
                 <span>Cross-border</span>
                 <strong id="flowCrossBorder">8,200</strong>
+                <div class="flow-bar"><div class="flow-bar-fill" id="flowCrossBorderBar" style="width: 82%"></div></div>
                 <small id="flowExcluded">-1,800 excluded</small>
               </div>
               <div class="flow-step" data-flow="threshold">
                 <span>&gt;25 / payee</span>
                 <strong id="flowReportable">3,420</strong>
+                <div class="flow-bar"><div class="flow-bar-fill" id="flowReportableBar" style="width: 34%"></div></div>
                 <small id="flowBelowThreshold">-4,780 below threshold</small>
               </div>
               <div class="flow-step" data-flow="xml">
@@ -120,17 +153,16 @@
           </div>
           <div class="timeline-header">
             <h3>Pipeline</h3>
-            <p>Scroll to advance</p>
           </div>
           <ol class="timeline-list">
             <li class="timeline-item" data-step="raw">
               <button type="button">Raw Ingest</button>
             </li>
             <li class="timeline-item" data-step="cross-border">
-              <button type="button">Cross-border filter</button>
+              <button type="button">Cross-border Filter</button>
             </li>
             <li class="timeline-item" data-step="threshold">
-              <button type="button">Threshold gate</button>
+              <button type="button">Threshold Gate</button>
             </li>
             <li class="timeline-item" data-step="errors">
               <button type="button">Error Detection</button>
@@ -157,19 +189,19 @@
                 <span class="step-index">01</span>
                 <h2>Raw Ingest</h2>
                 <p>
-                  Load a single PSP export plus its licensed Member State
-                  footprint. Capture source context, reporting period, and
-                  payment metadata before applying any rules.
+                  Load payment transaction data exactly as exported from the PSP's
+                  core systems. No transformations yet, preserving raw values
+                  for a complete audit trail.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Inputs</h3>
-                  <p>CSV rows, licensed Member States, and payee PSPs for remittance flows.</p>
+                  <h3>Source</h3>
+                  <p>PSP transaction export with payment details, account identifiers, and location data.</p>
                 </div>
                 <div class="callout">
-                  <h3>Focus</h3>
-                  <p>Preserve raw values to make later corrections auditable.</p>
+                  <h3>Principle</h3>
+                  <p>Keep original values intact so every downstream change is traceable.</p>
                 </div>
               </div>
             </article>
@@ -179,19 +211,18 @@
                 <span class="step-index">02</span>
                 <h2>Cross-border Filter</h2>
                 <p>
-                  Keep only cross-border payments. Transactions where payer and
-                  payee are in the same Member State are excluded from CESOP
-                  reporting.
+                  CESOP only applies to cross-border payments. Domestic transactions
+                  where payer and payee share the same Member State are filtered out.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Filter</h3>
-                  <p>Compare payer and payee locations per Art. 243b.</p>
+                  <h3>Rule</h3>
+                  <p>Compare payer location against payee location per VAT Directive Art. 243b.</p>
                 </div>
                 <div class="callout">
-                  <h3>Output</h3>
-                  <p>Cross-border subset ready for threshold checks.</p>
+                  <h3>Result</h3>
+                  <p>Only cross-border transactions proceed to threshold analysis.</p>
                 </div>
               </div>
             </article>
@@ -201,19 +232,19 @@
                 <span class="step-index">03</span>
                 <h2>Threshold Gate</h2>
                 <p>
-                  Apply the &gt;25 rule per payee and Member State for the quarter.
-                  Only payees above the threshold move forward, and we learn which
-                  Member States actually require reporting.
+                  Reporting triggers when a payee receives more than 25 cross-border
+                  payments in a quarter. This step identifies which payees and
+                  Member States require reporting.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
                   <h3>Aggregation</h3>
-                  <p>Count per payee and payee Member State.</p>
+                  <p>Count payments per payee per Member State within the quarter.</p>
                 </div>
                 <div class="callout">
-                  <h3>Result</h3>
-                  <p>Reportable transactions and reporting MS are isolated.</p>
+                  <h3>Output</h3>
+                  <p>Reportable payees identified, reporting jurisdictions determined.</p>
                 </div>
               </div>
             </article>
@@ -223,18 +254,19 @@
                 <span class="step-index">04</span>
                 <h2>Error Detection</h2>
                 <p>
-                  Identify missing identifiers, invalid country codes, and
-                  formatting issues that would break schema or business rules.
+                  Scan reportable records for data quality issues: invalid country
+                  codes, malformed dates, non-standard currencies. Problems that
+                  would fail validation are caught here.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Signal</h3>
-                  <p>Surface issues early with severity and volume.</p>
+                  <h3>Validation</h3>
+                  <p>Check against ISO code lists and CESOP schema requirements.</p>
                 </div>
                 <div class="callout">
-                  <h3>Output</h3>
-                  <p>Tagged records to route into correction logic.</p>
+                  <h3>Classification</h3>
+                  <p>Flag issues by type and severity for targeted correction.</p>
                 </div>
               </div>
             </article>
@@ -244,18 +276,19 @@
                 <span class="step-index">05</span>
                 <h2>Correction</h2>
                 <p>
-                  Apply normalization and repair rules. Capture every change as a
-                  diff so the correction story is explainable.
+                  Apply deterministic repair rules to fix detected issues.
+                  Every correction is logged as a diff, creating a complete
+                  audit trail from original to corrected values.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Rules</h3>
-                  <p>Format dates, normalize currencies, validate IDs.</p>
+                  <h3>Transforms</h3>
+                  <p>Normalize dates, standardize currency codes, fix location data.</p>
                 </div>
                 <div class="callout">
-                  <h3>Audit</h3>
-                  <p>Keep before and after values for reporting.</p>
+                  <h3>Transparency</h3>
+                  <p>Before/after diffs preserved for compliance review.</p>
                 </div>
               </div>
             </article>
@@ -265,18 +298,19 @@
                 <span class="step-index">06</span>
                 <h2>XML Generation</h2>
                 <p>
-                  Map normalized fields into CESOP PaymentData XML with the right
-                  namespaces, ordering, and schema version.
+                  Transform corrected records into CESOP PaymentData XML.
+                  Proper namespaces, element ordering, and schema compliance
+                  built in.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Mapping</h3>
-                  <p>Translate CSV columns to schema nodes.</p>
+                  <h3>Schema</h3>
+                  <p>CESOP PaymentData v4.03 with correct namespace declarations.</p>
                 </div>
                 <div class="callout">
-                  <h3>Output</h3>
-                  <p>One file per licensed Member State and quarter.</p>
+                  <h3>Files</h3>
+                  <p>One XML file per reporting Member State per quarter.</p>
                 </div>
               </div>
             </article>
@@ -286,18 +320,19 @@
                 <span class="step-index">07</span>
                 <h2>Validation</h2>
                 <p>
-                  Run the official CESOP Validation Module to confirm structure
-                  and business rules before submission.
+                  Run generated XML through the official EU CESOP Validation Module.
+                  Confirms schema compliance and business rule adherence before
+                  submission to tax authorities.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Checks</h3>
-                  <p>Schema compliance plus cross-field validation.</p>
+                  <h3>Official tool</h3>
+                  <p>EU-provided validator checks structure and cross-field rules.</p>
                 </div>
                 <div class="callout">
-                  <h3>Proof</h3>
-                  <p>Keep validation XML for audit and demos.</p>
+                  <h3>Evidence</h3>
+                  <p>Validation results stored alongside XML for audit trail.</p>
                 </div>
               </div>
             </article>
@@ -305,19 +340,19 @@
             <article class="step" id="step-outro" data-step="outro">
               <div class="step-head">
                 <span class="step-index">08</span>
-                <h2>Outro</h2>
+                <h2>Complete</h2>
                 <p>
-                  Wrap the story, hand off the artifacts, and point to the next
-                  destination for the demo.
+                  Pipeline finished. Validated XML files are ready for submission
+                  to Member State tax authorities via the CESOP portal.
                 </p>
               </div>
               <div class="step-body">
                 <div class="callout">
-                  <h3>Return</h3>
-                  <p><a href="#top">Back to main website</a></p>
+                  <h3>Deliverables</h3>
+                  <p>Validated XML files, correction audit logs, validation reports.</p>
                 </div>
                 <div class="callout">
-                  <h3>Project</h3>
+                  <h3>Source code</h3>
                   <p><a href="https://github.com/duckwilly/cesop">View on GitHub</a></p>
                 </div>
               </div>
@@ -328,16 +363,12 @@
             <div class="panel rule-panel">
               <div class="panel-header">
                 <div>
-                  <p class="panel-kicker">Rule focus</p>
+                  <p class="panel-kicker">Context</p>
                   <h3 id="ruleTitle"></h3>
                 </div>
-                <span class="pill">CESOP</span>
               </div>
               <p id="ruleBody"></p>
               <ul id="ruleList"></ul>
-              <a class="rule-link" href="{{ url_for('docs', path='business_rules.md') }}" id="ruleLink">
-                Review full rule catalog
-              </a>
             </div>
           </aside>
         </div>
