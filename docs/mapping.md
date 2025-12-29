@@ -20,7 +20,9 @@ XML root: `<CESOP>` (namespace `urn:ec.europa.eu:taxud:fiscalis:cesop:v1`)
 with attribute `version="4.03"` (fixed in the XSD).
 
 ## Transformation rules (core)
-1. Only include cross-border payments (`payer_country != payee_country`).
+1. Only include cross-border payments where the payer is in the EU and the
+   payee is in a different Member State or third country (payee country derived
+   from the payee identifier per Art. 243c).
 2. Bucket by calendar quarter and year.
 3. Threshold rule: for each payee location (Member State/country) and identifier,
    include only payees with `count > 25` cross-border payments in the quarter.
@@ -44,11 +46,15 @@ with attribute `version="4.03"` (fixed in the XSD).
 | `PaymentDataBody/ReportingPSP/PSPId` | `psp_id` | Attribute `PSPIdType="BIC"` (default). |
 | `PaymentDataBody/ReportingPSP/Name` | `psp_name` | `nameType="BUSINESS"`. |
 
+`psp_id`/`psp_name` always refer to the reporting PSP. `payee_psp_id` and
+`payee_psp_name` are used to decide whether the reporting PSP is acting for the
+payer or the payee (payer PSPs skip reporting when the payee PSP is in the EU).
+
 ## ReportedPayee (grouped by payee_id)
 | XML Element | Source | Notes |
 | --- | --- | --- |
 | `ReportedPayee/Name` | `payee_name` | `nameType="BUSINESS"`. |
-| `ReportedPayee/Country` | `payee_country` | ISO-3166 alpha-2. |
+| `ReportedPayee/Country` | derived | From payee account identifier; if no account, payee PSP BIC (ISO-3166 alpha-2). |
 | `ReportedPayee/Address` | derived | Use `AddressFree` if available. |
 | `ReportedPayee/EmailAddress` | `payee_email` | Optional. |
 | `ReportedPayee/WebPage` | `payee_web` | Optional. |
@@ -57,6 +63,7 @@ with attribute `version="4.03"` (fixed in the XSD).
 | `ReportedPayee/TAXIdentification/TAXId/@issuedBy` | `payee_country` | Required by `TAXId_Type` (country). |
 | `ReportedPayee/TAXIdentification/TAXId/@type` | constant | `TIN` (required by `TAXId_Type`). |
 | `ReportedPayee/AccountIdentifier` | `payee_account` | Emit allowed identifier sets (single account, or account+BIC pair); attributes: `type=payee_account_type`, `CountryCode=payee_country`, and `accountIdentifierOther` when `type=Other`. |
+| `ReportedPayee/Representative` | `payee_psp_id`, `payee_psp_name` | Required only when the payee receives funds without a payment account. Uses `RepresentativeId` with `PSPIdType="BIC"`. |
 | `ReportedPayee/DocSpec/DocTypeIndic` | constant | `CESOP1` (new data). |
 | `ReportedPayee/DocSpec/DocRefId` | generated | UUID v4. |
 
@@ -72,6 +79,12 @@ Use `cm:AddressFree` (from `commontypes.xsd`) if any of `payee_address_line`,
 ### PaymentMethod mapping
 `PaymentMethod` uses `cm:PaymentMethodType` (and optional
 `cm:PaymentMethodOther`) defined in `commontypes.xsd`.
+
+### Account identifier sets
+CESOP validation allows only a **single** `IBAN`/`OBAN`/`Other` identifier per
+payee, or a paired account + `BIC`. When multiple identifiers appear in the
+input CSV, the XML output selects a primary account (IBAN > OBAN > Other) and
+adds one optional `BIC` if present.
 
 ## ReportedTransaction (per payment)
 | XML Element | Source | Notes |

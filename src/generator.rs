@@ -1,3 +1,4 @@
+use crate::location::bic_country_code;
 use crate::models::PaymentRecord;
 use crate::reference::{iban_length, is_eu_member_state, EU_MEMBER_STATES};
 use crate::util::{
@@ -22,6 +23,7 @@ pub struct GeneratorConfig {
     pub refund_ratio: f64,
     pub multi_account_ratio: f64,
     pub non_eu_payee_ratio: f64,
+    pub no_account_payee_ratio: f64,
     pub year: i32,
     pub quarter: u8,
 }
@@ -59,10 +61,14 @@ struct PayeeProfile {
     address_line: Option<String>,
     city: Option<String>,
     postcode: Option<String>,
-    psp_id: String,
-    psp_name: String,
+    payee_psp_id: String,
+    payee_psp_name: String,
+    reporting_psp_id: String,
+    reporting_psp_name: String,
+    psp_role: String,
 }
 
+#[derive(Clone)]
 struct PspProfile {
     id: String,
     name: String,
@@ -137,6 +143,9 @@ const PSP_NAMES: &[&str] = &[
     "Summit Payments",
 ];
 
+const PSP_ROLE_PAYEE: &str = "PAYEE";
+const PSP_ROLE_PAYER: &str = "PAYER";
+
 pub fn generate_records(
     config: &GeneratorConfig,
     seed: u64,
@@ -154,13 +163,16 @@ pub fn generate_records(
     }
 
     let psps = build_psps(&mut rng, config.psps)?;
+    let non_eu_psps = build_non_eu_psps(&mut rng, (config.psps / 2).max(1))?;
     let payees = build_payees(
         &mut rng,
         &plans,
         &mut company_cores,
         &psps,
+        &non_eu_psps,
         config.multi_account_ratio,
         config.non_eu_payee_ratio,
+        config.no_account_payee_ratio,
     );
 
     let (period_start, period_end) = quarter_bounds(config.year, config.quarter)?;
@@ -204,10 +216,13 @@ pub fn generate_records(
                 rng.gen_bool(0.2)
             };
             let payer_ms_source = pick_payer_ms_source(&mut rng).to_string();
-            let account = payee
-                .accounts
-                .choose(&mut rng)
-                .ok_or_else(|| "payee has no account identifiers".to_string())?;
+            let (payee_account, payee_account_type) = if let Some(account) =
+                payee.accounts.choose(&mut rng)
+            {
+                (account.id.clone(), account.account_type.clone())
+            } else {
+                (String::new(), String::new())
+            };
 
             records.push(PaymentRecord {
                 payment_id,
@@ -219,8 +234,8 @@ pub fn generate_records(
                 payee_country: payee.country.clone(),
                 payee_id: payee.id.clone(),
                 payee_name: payee.name.clone(),
-                payee_account: account.id.clone(),
-                payee_account_type: account.account_type.clone(),
+                payee_account,
+                payee_account_type,
                 payee_tax_id: payee.tax_id.clone(),
                 payee_vat_id: payee.vat_id.clone(),
                 payee_email: payee.email.clone(),
@@ -232,8 +247,11 @@ pub fn generate_records(
                 initiated_at_pos,
                 is_refund,
                 corr_payment_id,
-                psp_id: payee.psp_id.clone(),
-                psp_name: payee.psp_name.clone(),
+                psp_role: Some(payee.psp_role.clone()),
+                payee_psp_id: Some(payee.payee_psp_id.clone()),
+                payee_psp_name: Some(payee.payee_psp_name.clone()),
+                psp_id: payee.reporting_psp_id.clone(),
+                psp_name: payee.reporting_psp_name.clone(),
             });
         }
     }
@@ -266,6 +284,9 @@ fn validate_config(config: &GeneratorConfig) -> Result<(), String> {
     }
     if !(0.0..=1.0).contains(&config.non_eu_payee_ratio) {
         return Err("non_eu_payee_ratio must be 0..1".to_string());
+    }
+    if !(0.0..=1.0).contains(&config.no_account_payee_ratio) {
+        return Err("no_account_payee_ratio must be 0..1".to_string());
     }
     Ok(())
 }
@@ -354,66 +375,93 @@ fn build_payees<R: Rng + ?Sized>(
     plans: &[PayeePlan],
     company_cores: &mut Vec<String>,
     psps: &[PspProfile],
+    non_eu_psps: &[PspProfile],
     multi_account_ratio: f64,
     non_eu_payee_ratio: f64,
+    no_account_payee_ratio: f64,
 ) -> Vec<PayeeProfile> {
-    plans
-        .iter()
-        .enumerate()
-        .map(|(idx, plan)| {
-            let country = pick_payee_country(rng, non_eu_payee_ratio);
-            let core = pick_company_core(rng, company_cores);
-            let name = build_company_name(rng, &core);
-            let slug = slugify(&name);
-            let accounts = build_payee_accounts(rng, &country, multi_account_ratio);
-            let psp = psps.choose(rng).unwrap_or_else(|| &psps[0]);
+    let mut payees = Vec::with_capacity(plans.len());
+    for (idx, plan) in plans.iter().enumerate() {
+        let mut country = pick_payee_country(rng, non_eu_payee_ratio);
+        let core = pick_company_core(rng, company_cores);
+        let name = build_company_name(rng, &core);
+        let slug = slugify(&name);
+        let payee_psp_is_eu = is_eu_member_state(&country) || non_eu_psps.is_empty();
+        let payee_psp = if payee_psp_is_eu {
+            psps.choose(rng).unwrap_or_else(|| &psps[0])
+        } else {
+            non_eu_psps
+                .choose(rng)
+                .unwrap_or_else(|| &non_eu_psps[0])
+        };
+        let payee_psp_country =
+            bic_country_code(&payee_psp.id).unwrap_or_else(|| country.clone());
+        let has_account = !rng.gen_bool(no_account_payee_ratio);
+        let accounts = if has_account {
+            build_payee_accounts(rng, &country, multi_account_ratio)
+        } else {
+            Vec::new()
+        };
+        if !has_account {
+            country = payee_psp_country;
+        }
+        let (reporting_psp, psp_role) = if payee_psp_is_eu {
+            (payee_psp, PSP_ROLE_PAYEE)
+        } else {
+            let payer_psp = psps.choose(rng).unwrap_or(payee_psp);
+            (payer_psp, PSP_ROLE_PAYER)
+        };
 
-            let (tax_chance, vat_chance) = match plan.segment.label {
-                "micro" => (0.2, 0.4),
-                "small" => (0.35, 0.6),
-                "mid" => (0.5, 0.75),
-                "near_threshold_below" => (0.55, 0.8),
-                "near_threshold_above" => (0.6, 0.85),
-                "large" => (0.8, 0.95),
-                _ => (0.4, 0.6),
-            };
+        let (tax_chance, vat_chance) = match plan.segment.label {
+            "micro" => (0.2, 0.4),
+            "small" => (0.35, 0.6),
+            "mid" => (0.5, 0.75),
+            "near_threshold_below" => (0.55, 0.8),
+            "near_threshold_above" => (0.6, 0.85),
+            "large" => (0.8, 0.95),
+            _ => (0.4, 0.6),
+        };
 
-            let tax_id = if rng.gen_bool(tax_chance) {
-                Some(format!("TAX{}{}", country, random_digits(rng, 8)))
-            } else {
-                None
-            };
-            let vat_id = if is_eu_member_state(&country) && rng.gen_bool(vat_chance) {
-                Some(format!("{}{}", country, random_digits(rng, 9)))
-            } else {
-                None
-            };
+        let tax_id = if rng.gen_bool(tax_chance) {
+            Some(format!("TAX{}{}", country, random_digits(rng, 8)))
+        } else {
+            None
+        };
+        let vat_id = if is_eu_member_state(&country) && rng.gen_bool(vat_chance) {
+            Some(format!("{}{}", country, random_digits(rng, 9)))
+        } else {
+            None
+        };
 
-            let street_num = rng.gen_range(1..250);
-            let street = STREET_NAMES.choose(rng).unwrap_or(&"Market");
-            let address_line = Some(format!("{} {} St", street_num, street));
-            let city = CITIES.choose(rng).unwrap_or(&"Berlin").to_string();
-            let postcode = random_digits(rng, 5);
+        let street_num = rng.gen_range(1..250);
+        let street = STREET_NAMES.choose(rng).unwrap_or(&"Market");
+        let address_line = Some(format!("{} {} St", street_num, street));
+        let city = CITIES.choose(rng).unwrap_or(&"Berlin").to_string();
+        let postcode = random_digits(rng, 5);
 
-            PayeeProfile {
-                id: format!("MER{:06}", idx + 1),
-                name,
-                amount_min: plan.segment.amount_min,
-                amount_max: plan.segment.amount_max,
-                country,
-                accounts,
-                tax_id,
-                vat_id,
-                email: Some(format!("billing@{}.example", slug)),
-                web: Some(format!("https://{}.example", slug)),
-                address_line,
-                city: Some(city),
-                postcode: Some(postcode),
-                psp_id: psp.id.clone(),
-                psp_name: psp.name.clone(),
-            }
-        })
-        .collect()
+        payees.push(PayeeProfile {
+            id: format!("MER{:06}", idx + 1),
+            name,
+            amount_min: plan.segment.amount_min,
+            amount_max: plan.segment.amount_max,
+            country,
+            accounts,
+            tax_id,
+            vat_id,
+            email: Some(format!("billing@{}.example", slug)),
+            web: Some(format!("https://{}.example", slug)),
+            address_line,
+            city: Some(city),
+            postcode: Some(postcode),
+            payee_psp_id: payee_psp.id.clone(),
+            payee_psp_name: payee_psp.name.clone(),
+            reporting_psp_id: reporting_psp.id.clone(),
+            reporting_psp_name: reporting_psp.name.clone(),
+            psp_role: psp_role.to_string(),
+        });
+    }
+
+    payees
 }
 
 fn build_psp<R: Rng + ?Sized>(rng: &mut R) -> PspProfile {
@@ -425,9 +473,41 @@ fn build_psp<R: Rng + ?Sized>(rng: &mut R) -> PspProfile {
     }
 }
 
+fn build_psp_for_country<R: Rng + ?Sized>(rng: &mut R, country: &str) -> PspProfile {
+    let name = PSP_NAMES.choose(rng).unwrap_or(&"Atlas Pay");
+    let bic = generate_bic_for_country(rng, country);
+    PspProfile {
+        id: bic,
+        name: name.to_string(),
+    }
+}
+
+fn build_non_eu_psp<R: Rng + ?Sized>(rng: &mut R) -> PspProfile {
+    let name = PSP_NAMES.choose(rng).unwrap_or(&"Atlas Pay");
+    let country = NON_EU_PAYEE_COUNTRIES
+        .choose(rng)
+        .unwrap_or(&"GB")
+        .to_string();
+    let bic = generate_bic_for_country(rng, &country);
+    PspProfile {
+        id: bic,
+        name: name.to_string(),
+    }
+}
+
 fn build_psps<R: Rng + ?Sized>(rng: &mut R, count: usize) -> Result<Vec<PspProfile>, String> {
     let mut psps = Vec::with_capacity(count);
     let mut seen = HashSet::new();
+    let unique_targets = count.min(EU_MEMBER_STATES.len());
+    let mut countries: Vec<&str> = EU_MEMBER_STATES.iter().copied().collect();
+    countries.shuffle(rng);
+
+    for country in countries.into_iter().take(unique_targets) {
+        let psp = build_psp_for_country(rng, country);
+        if seen.insert(psp.id.clone()) {
+            psps.push(psp);
+        }
+    }
 
     while psps.len() < count {
         let psp = build_psp(rng);
@@ -436,6 +516,26 @@ fn build_psps<R: Rng + ?Sized>(rng: &mut R, count: usize) -> Result<Vec<PspProfi
         }
         if seen.len() > count * 10 {
             return Err("failed to generate unique PSP identifiers".to_string());
+        }
+    }
+
+    Ok(psps)
+}
+
+fn build_non_eu_psps<R: Rng + ?Sized>(
+    rng: &mut R,
+    count: usize,
+) -> Result<Vec<PspProfile>, String> {
+    let mut psps = Vec::with_capacity(count);
+    let mut seen = HashSet::new();
+
+    while psps.len() < count {
+        let psp = build_non_eu_psp(rng);
+        if seen.insert(psp.id.clone()) {
+            psps.push(psp);
+        }
+        if seen.len() > count * 10 {
+            return Err("failed to generate unique non-eu PSP identifiers".to_string());
         }
     }
 
@@ -560,12 +660,8 @@ fn generate_iban<R: Rng + ?Sized>(rng: &mut R, country: &str) -> String {
     format!("{}{}{}", country, check, bban)
 }
 
-fn generate_bic<R: Rng + ?Sized>(rng: &mut R) -> String {
+fn generate_bic_for_country<R: Rng + ?Sized>(rng: &mut R, country: &str) -> String {
     let bank = random_upper_letters(rng, 4);
-    let country = EU_MEMBER_STATES
-        .choose(rng)
-        .unwrap_or(&"DE")
-        .to_string();
     let location = random_alphanum_upper(rng, 2);
     let branch = if rng.gen_bool(0.7) {
         Some(random_alphanum_upper(rng, 3))
@@ -578,6 +674,15 @@ fn generate_bic<R: Rng + ?Sized>(rng: &mut R) -> String {
         None => format!("{}{}{}", bank, country, location),
     }
 }
+
+fn generate_bic<R: Rng + ?Sized>(rng: &mut R) -> String {
+    let country = EU_MEMBER_STATES
+        .choose(rng)
+        .unwrap_or(&"DE")
+        .to_string();
+    generate_bic_for_country(rng, &country)
+}
+
 
 fn pick_payee_country<R: Rng + ?Sized>(rng: &mut R, non_eu_ratio: f64) -> String {
     if rng.gen_bool(non_eu_ratio) {
@@ -601,7 +706,7 @@ fn build_payee_accounts<R: Rng + ?Sized>(
 
     if rng.gen_bool(multi_account_ratio) {
         accounts.push(PayeeAccount {
-            id: generate_bic(rng),
+            id: generate_bic_for_country(rng, country),
             account_type: "BIC".to_string(),
         });
     }

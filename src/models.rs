@@ -32,6 +32,12 @@ pub struct PaymentRecord {
     pub is_refund: bool,
     #[serde(default)]
     pub corr_payment_id: Option<String>,
+    #[serde(default)]
+    pub psp_role: Option<String>,
+    #[serde(default)]
+    pub payee_psp_id: Option<String>,
+    #[serde(default)]
+    pub payee_psp_name: Option<String>,
     pub psp_id: String,
     pub psp_name: String,
 }

@@ -18,6 +18,9 @@ A payment is cross-border when:
 Payer/payee location is determined via identifiers (Art. 243c):
 - Use IBAN or another identifier that unambiguously identifies location.
 - If no identifier, use the BIC (or equivalent) of the PSP acting for payer/payee.
+  - Project behavior: payee country is derived from account identifiers first
+    (IBAN/OBAN/BIC/Other) and falls back to the payee PSP BIC only when no
+    account identifier is available.
 
 ## Threshold and aggregation (Art. 243b(2))
 Record keeping/reporting applies when, in a calendar quarter:
@@ -42,7 +45,7 @@ Required payee/PSP info:
 - Payee name (as recorded by PSP).
 - Payee VAT/TIN (if available).
 - Payee account identifier (IBAN or other) **when funds go to a payee account**.
-- Payee PSP BIC/identifier **when payee has no account**.
+- Payee PSP BIC/identifier **when payee has no account** (ReportedPayee/Representative).
 - Payee address (if available).
 
 Required payment/refund info:
@@ -76,3 +79,10 @@ Mandatory elements and checks at transmission to CESOP (high-level):
   payee group; refunds do **not** count toward the >25 threshold by default.
 - Reporting assumes a payee account is present unless explicitly modeled
   otherwise (Representative/Payee PSP case).
+- We model the payer-PSP vs payee-PSP rule with `psp_role` and `payee_psp_id`;
+  payer PSP records are reportable only when the payee PSP is outside the EU.
+  Threshold counts still include payer-PSP payments when the payee PSP is in
+  the EU, per Art. 243b(3).
+- CESOP validation allows **one account identifier** per payee (IBAN/OBAN/Other)
+  or a paired account + BIC. When multiple identifiers exist, the XML output
+  chooses a primary account (IBAN > OBAN > Other) and one optional BIC.

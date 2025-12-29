@@ -1,4 +1,5 @@
 use crate::analysis::analyze_threshold_records;
+use crate::location::{account_country_code, normalize_country_code, resolve_payee_country};
 use crate::models::PaymentRecord;
 use crate::reference::{iban_length, is_eu_member_state, ACCOUNT_IDENTIFIER_TYPES};
 use crate::util::iban_check_digits;
@@ -97,7 +98,7 @@ pub fn preflight_csv(
         }
     }
 
-    let report = analyze_threshold_records(&records, threshold, include_refunds);
+    let report = analyze_threshold_records(&records, threshold, include_refunds)?;
 
     Ok(PreflightReport {
         threshold,
@@ -144,17 +145,43 @@ fn validate_record(record: &PaymentRecord, issues: &mut Vec<PreflightIssue>) {
             "payer_country must be an EU Member State",
         ));
     }
-    if !is_valid_country(&record.payee_country) {
+    let derived_payee_country = match resolve_payee_country(record) {
+        Ok(country) => Some(country),
+        Err(err) => {
+            issues.push(issue(IssueLevel::Error, &err));
+            None
+        }
+    };
+    let provided_payee_country = normalize_country_code(&record.payee_country);
+    if record.payee_country.trim().is_empty() {
+        if derived_payee_country.is_some() {
+            issues.push(issue(
+                IssueLevel::Warning,
+                "payee_country missing; derived from identifier",
+            ));
+        }
+    } else if provided_payee_country.is_none() {
         issues.push(issue(
             IssueLevel::Error,
             "payee_country must be ISO-3166 alpha-2",
         ));
+    } else if let (Some(provided), Some(derived)) =
+        (provided_payee_country.as_deref(), derived_payee_country.as_deref())
+    {
+        if provided != derived {
+            issues.push(issue(
+                IssueLevel::Error,
+                "payee_country does not match derived location",
+            ));
+        }
     }
-    if record.payer_country == record.payee_country {
-        issues.push(issue(
-            IssueLevel::Warning,
-            "payment is not cross-border (not reportable)",
-        ));
+    if let Some(derived) = derived_payee_country.as_deref() {
+        if record.payer_country == derived {
+            issues.push(issue(
+                IssueLevel::Warning,
+                "payment is not cross-border (not reportable)",
+            ));
+        }
     }
     if record.payee_id.trim().is_empty() {
         issues.push(issue(IssueLevel::Error, "payee_id is required"));
@@ -162,10 +189,31 @@ fn validate_record(record: &PaymentRecord, issues: &mut Vec<PreflightIssue>) {
     if record.payee_name.trim().is_empty() {
         issues.push(issue(IssueLevel::Error, "payee_name is required"));
     }
-    if record.payee_account.trim().is_empty() {
-        issues.push(issue(IssueLevel::Error, "payee_account is required"));
-    }
-    if !ACCOUNT_IDENTIFIER_TYPES
+    let has_payee_account = !record.payee_account.trim().is_empty();
+    if !has_payee_account {
+        let has_representative = record
+            .payee_psp_id
+            .as_deref()
+            .map(is_valid_bic)
+            .unwrap_or(false);
+        if has_representative {
+            issues.push(issue(
+                IssueLevel::Warning,
+                "payee_account missing; representative PSP will be reported",
+            ));
+        } else {
+            issues.push(issue(
+                IssueLevel::Error,
+                "payee_account missing without a valid payee PSP identifier",
+            ));
+        }
+        if !record.payee_account_type.trim().is_empty() {
+            issues.push(issue(
+                IssueLevel::Warning,
+                "payee_account_type provided without payee_account",
+            ));
+        }
+    } else if !ACCOUNT_IDENTIFIER_TYPES
         .iter()
         .any(|value| *value == record.payee_account_type)
     {
@@ -174,7 +222,13 @@ fn validate_record(record: &PaymentRecord, issues: &mut Vec<PreflightIssue>) {
             "payee_account_type must be IBAN/OBAN/BIC/Other",
         ));
     } else if record.payee_account_type == "IBAN" {
-        validate_iban(&record.payee_account, &record.payee_country, issues);
+        let country = account_country_code("IBAN", &record.payee_account)
+            .or_else(|| normalize_country_code(&record.payee_country));
+        if let Some(code) = country {
+            validate_iban(&record.payee_account, &code, issues);
+        } else {
+            issues.push(issue(IssueLevel::Error, "IBAN country code missing"));
+        }
     }
     if !ACCOUNT_IDENTIFIER_TYPES
         .iter()
@@ -272,7 +326,7 @@ fn validate_iban(
     if iban_country != country {
         issues.push(issue(
             IssueLevel::Error,
-            "IBAN country code does not match payee_country",
+            "IBAN country code does not match derived payee country",
         ));
     }
     if let Some(expected) = iban_length(country) {

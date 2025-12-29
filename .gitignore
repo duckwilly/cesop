@@ -23,6 +23,14 @@ Thumbs.db
 /data/synthetic/*.jsonl
 /data/output/*
 /data/reference/
+/data/portfolio_demo/
+
+# Python cache artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 /plan.md
 /spec/

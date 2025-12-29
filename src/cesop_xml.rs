@@ -1,10 +1,12 @@
 use crate::analysis::{reportable_payee_keys, PayeeKey};
+use crate::location::{bic_country_code, resolve_payee_country};
 use crate::models::PaymentRecord;
+use crate::reference::is_eu_member_state;
 
 use chrono::{Datelike, SecondsFormat, Utc};
 use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::Writer;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -42,10 +44,18 @@ pub struct PayeeAccount {
 }
 
 #[derive(Debug, Clone)]
+pub struct Representative {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct PayeeGroup {
+    pub payee_id: String,
     pub payee_name: String,
     pub payee_country: String,
     pub payee_accounts: Vec<PayeeAccount>,
+    pub representative: Option<Representative>,
     pub payee_tax_id: Option<String>,
     pub payee_vat_id: Option<String>,
     pub payee_email: Option<String>,
@@ -59,6 +69,7 @@ pub struct PayeeGroup {
 pub fn build_reports_from_csv(
     input: &Path,
     transmitting_country: &str,
+    licensed_countries: Option<&[String]>,
 ) -> Result<Vec<CesopReport>, String> {
     let records = read_csv(input)?;
     if records.is_empty() {
@@ -90,7 +101,37 @@ pub fn build_reports_from_csv(
 
     let mut reports = Vec::new();
     for (key, period_records) in period_map {
-        let payees = group_payees(period_records, REPORTING_THRESHOLD)?;
+        let reportable_payees =
+            reportable_payee_keys(&period_records, REPORTING_THRESHOLD, false)?;
+        let reportable_records: Vec<PaymentRecord> = period_records
+            .into_iter()
+            .filter(|record| reportable_for_psp(record))
+            .collect();
+        let payees = group_payees(reportable_records, &reportable_payees)?;
+        if let Some(licensed) = licensed_countries {
+            if !licensed.is_empty() {
+                let assignments = split_payees_by_license(payees, licensed, &key.psp_id)?;
+                for (country, assigned) in assignments {
+                    let message_type_indic = if assigned.is_empty() {
+                        "CESOP102".to_string()
+                    } else {
+                        "CESOP100".to_string()
+                    };
+                    let tx_country = resolve_transmitting_country(&country, &key.psp_id)?;
+
+                    reports.push(CesopReport {
+                        period: key.period,
+                        transmitting_country: tx_country,
+                        reporting_psp_id: key.psp_id.clone(),
+                        reporting_psp_name: key.psp_name.clone(),
+                        payees: assigned,
+                        message_type_indic,
+                    });
+                }
+                continue;
+            }
+        }
+
         let message_type_indic = if payees.is_empty() {
             "CESOP102".to_string()
         } else {
@@ -158,17 +199,22 @@ fn resolve_transmitting_country(requested: &str, psp_id: &str) -> Result<String,
     Ok(requested.trim().to_uppercase())
 }
 
-fn bic_country_code(bic: &str) -> Option<String> {
-    let bic = bic.trim();
-    if !(bic.len() == 8 || bic.len() == 11) {
-        return None;
+fn reportable_for_psp(record: &PaymentRecord) -> bool {
+    let role = record.psp_role.as_deref().unwrap_or("PAYEE");
+    if !role.eq_ignore_ascii_case("PAYER") {
+        return true;
     }
-    let code = &bic[4..6];
-    if code.chars().all(|ch| ch.is_ascii_alphabetic()) {
-        Some(code.to_uppercase())
-    } else {
-        None
-    }
+    let Some(payee_psp_id) = record.payee_psp_id.as_deref() else {
+        return true;
+    };
+    let Some(country) = bic_country_code(payee_psp_id) else {
+        return true;
+    };
+    !is_eu_member_state(&country)
+}
+
+fn is_cross_border(payer_country: &str, payee_country: &str) -> bool {
+    is_eu_member_state(payer_country) && payer_country != payee_country
 }
 
 fn period_from_timestamp(ts: &str) -> Result<PeriodKey, String> {
@@ -181,17 +227,21 @@ fn period_from_timestamp(ts: &str) -> Result<PeriodKey, String> {
     })
 }
 
-fn group_payees(records: Vec<PaymentRecord>, threshold: usize) -> Result<Vec<PayeeGroup>, String> {
-    let reportable_payees = reportable_payee_keys(&records, threshold, false);
+fn group_payees(
+    records: Vec<PaymentRecord>,
+    reportable_payees: &HashSet<PayeeKey>,
+) -> Result<Vec<PayeeGroup>, String> {
     let mut groups: BTreeMap<PayeeKey, Vec<PaymentRecord>> = BTreeMap::new();
 
     for record in records {
-        if record.payer_country == record.payee_country {
+        let payee_country = resolve_payee_country(&record)?;
+        if !is_cross_border(record.payer_country.as_str(), &payee_country) {
             continue;
         }
         let key = PayeeKey {
+            psp_id: record.psp_id.clone(),
             payee_id: record.payee_id.clone(),
-            payee_country: record.payee_country.clone(),
+            payee_country: payee_country.clone(),
         };
         groups.entry(key).or_default().push(record);
     }
@@ -205,11 +255,40 @@ fn group_payees(records: Vec<PaymentRecord>, threshold: usize) -> Result<Vec<Pay
             .first()
             .ok_or_else(|| "missing transactions for payee".to_string())?;
         let payee_accounts = collect_payee_accounts(&transactions)?;
+        let representative = if payee_accounts.len() == 1 && payee_accounts[0].id.is_empty() {
+            let rep_id = transactions
+                .iter()
+                .find_map(|tx| {
+                    tx.payee_psp_id
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| value.to_string())
+                })
+                .ok_or_else(|| {
+                    "payee PSP identifier required when payee account is missing".to_string()
+                })?;
+            let rep_name = transactions
+                .iter()
+                .find_map(|tx| {
+                    tx.payee_psp_name
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| value.to_string())
+                });
+            Some(Representative {
+                id: rep_id,
+                name: rep_name,
+            })
+        } else {
+            None
+        };
 
         payees.push(PayeeGroup {
+            payee_id: payee_key.payee_id.clone(),
             payee_name: first.payee_name.clone(),
-            payee_country: first.payee_country.clone(),
+            payee_country: payee_key.payee_country.clone(),
             payee_accounts,
+            representative,
             payee_tax_id: first.payee_tax_id.clone(),
             payee_vat_id: first.payee_vat_id.clone(),
             payee_email: first.payee_email.clone(),
@@ -224,27 +303,114 @@ fn group_payees(records: Vec<PaymentRecord>, threshold: usize) -> Result<Vec<Pay
     Ok(payees)
 }
 
-fn collect_payee_accounts(transactions: &[PaymentRecord]) -> Result<Vec<PayeeAccount>, String> {
-    let mut accounts: BTreeMap<String, String> = BTreeMap::new();
-    for tx in transactions {
-        if tx.payee_account.is_empty() {
-            return Err("payee account cannot be empty".to_string());
+fn split_payees_by_license(
+    mut payees: Vec<PayeeGroup>,
+    licensed: &[String],
+    psp_id: &str,
+) -> Result<BTreeMap<String, Vec<PayeeGroup>>, String> {
+    let mut assignments: BTreeMap<String, Vec<PayeeGroup>> = BTreeMap::new();
+    for code in licensed {
+        assignments.insert(code.clone(), Vec::new());
+    }
+    if licensed.is_empty() {
+        return Ok(assignments);
+    }
+
+    let licensed_set: HashSet<&str> = licensed.iter().map(|code| code.as_str()).collect();
+    let home_country = bic_country_code(psp_id);
+
+    payees.sort_by(|left, right| left.payee_id.cmp(&right.payee_id));
+    let mut fallback_idx = 0usize;
+    for payee in payees.into_iter() {
+        if licensed_set.contains(payee.payee_country.as_str()) {
+            if let Some(entry) = assignments.get_mut(&payee.payee_country) {
+                entry.push(payee);
+            }
+            continue;
         }
-        let entry = accounts
-            .entry(tx.payee_account.clone())
-            .or_insert_with(|| tx.payee_account_type.clone());
-        if entry != &tx.payee_account_type {
-            return Err(format!(
-                "payee account {} has multiple account types",
-                tx.payee_account
-            ));
+
+        if let Some(home) = home_country.as_deref() {
+            if licensed_set.contains(home) {
+                if let Some(entry) = assignments.get_mut(home) {
+                    entry.push(payee);
+                    continue;
+                }
+            }
+        }
+
+        let country = &licensed[fallback_idx % licensed.len()];
+        fallback_idx = fallback_idx.saturating_add(1);
+        if let Some(entry) = assignments.get_mut(country) {
+            entry.push(payee);
         }
     }
 
-    Ok(accounts
-        .into_iter()
-        .map(|(id, account_type)| PayeeAccount { id, account_type })
-        .collect())
+    Ok(assignments)
+}
+
+fn collect_payee_accounts(transactions: &[PaymentRecord]) -> Result<Vec<PayeeAccount>, String> {
+    let mut ibans: BTreeMap<String, String> = BTreeMap::new();
+    let mut obans: BTreeMap<String, String> = BTreeMap::new();
+    let mut others: BTreeMap<String, String> = BTreeMap::new();
+    let mut bics: BTreeMap<String, String> = BTreeMap::new();
+
+    for tx in transactions {
+        let account_id = tx.payee_account.trim();
+        if account_id.is_empty() {
+            continue;
+        }
+        match tx.payee_account_type.as_str() {
+            "IBAN" => {
+                ibans.insert(account_id.to_string(), "IBAN".to_string());
+            }
+            "OBAN" => {
+                obans.insert(account_id.to_string(), "OBAN".to_string());
+            }
+            "Other" => {
+                others.insert(account_id.to_string(), "Other".to_string());
+            }
+            "BIC" => {
+                bics.insert(account_id.to_string(), "BIC".to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let mut accounts: Vec<PayeeAccount> = Vec::new();
+    if let Some((id, account_type)) = ibans.iter().next() {
+        accounts.push(PayeeAccount {
+            id: id.clone(),
+            account_type: account_type.clone(),
+        });
+    } else if let Some((id, account_type)) = obans.iter().next() {
+        accounts.push(PayeeAccount {
+            id: id.clone(),
+            account_type: account_type.clone(),
+        });
+    } else if let Some((id, account_type)) = others.iter().next() {
+        accounts.push(PayeeAccount {
+            id: id.clone(),
+            account_type: account_type.clone(),
+        });
+    }
+
+    if !accounts.is_empty() {
+        if let Some((id, account_type)) = bics.iter().next() {
+            accounts.push(PayeeAccount {
+                id: id.clone(),
+                account_type: account_type.clone(),
+            });
+        }
+    }
+
+    if accounts.is_empty() {
+        accounts.push(PayeeAccount {
+            id: String::new(),
+            account_type: String::new(),
+        });
+    }
+
+    Ok(accounts)
 }
 
 fn write_report(report: &CesopReport, path: &Path) -> Result<(), String> {
@@ -365,6 +531,10 @@ fn write_reported_payee<W: std::io::Write>(
     write_end(writer, "TAXIdentification")?;
 
     for account in &payee.payee_accounts {
+        if account.id.is_empty() {
+            write_text_element(writer, "AccountIdentifier", "")?;
+            continue;
+        }
         let mut attrs = vec![
             ("CountryCode", payee.payee_country.as_str()),
             ("type", account.account_type.as_str()),
@@ -377,6 +547,20 @@ fn write_reported_payee<W: std::io::Write>(
 
     for tx in &payee.transactions {
         write_reported_transaction(writer, tx)?;
+    }
+
+    if let Some(rep) = payee.representative.as_ref() {
+        write_start(writer, "Representative", &[])?;
+        write_text_element_with_attrs(
+            writer,
+            "RepresentativeId",
+            &rep.id,
+            &[("PSPIdType", "BIC")],
+        )?;
+        if let Some(name) = rep.name.as_deref() {
+            write_text_element_with_attrs(writer, "Name", name, &[("nameType", "BUSINESS")])?;
+        }
+        write_end(writer, "Representative")?;
     }
 
     write_start(writer, "DocSpec", &[])?;
@@ -413,10 +597,11 @@ fn write_reported_transaction<W: std::io::Write>(
         &tx.execution_time,
         &[("transactionDateType", "CESOP701")],
     )?;
+    let amount = format_amount_for_xml(&tx.amount, tx.is_refund)?;
     write_text_element_with_attrs(
         writer,
         "Amount",
-        &format_amount_for_xml(&tx.amount, tx.is_refund),
+        &amount,
         &[("currency", tx.currency.as_str())],
     )?;
 
@@ -474,11 +659,13 @@ fn build_address_free(payee: &PayeeGroup) -> Option<String> {
     Some(parts.join(", "))
 }
 
-fn format_amount_for_xml(amount: &str, is_refund: bool) -> String {
-    let parsed = amount.parse::<f64>().unwrap_or(0.0);
+fn format_amount_for_xml(amount: &str, is_refund: bool) -> Result<String, String> {
+    let parsed = amount
+        .parse::<f64>()
+        .map_err(|_| format!("invalid amount '{}'", amount))?;
     let value = parsed.abs();
     let signed = if is_refund { -value } else { value };
-    format!("{:.2}", signed)
+    Ok(format!("{:.2}", signed))
 }
 
 fn write_start<W: std::io::Write>(

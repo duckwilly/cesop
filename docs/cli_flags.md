@@ -10,6 +10,7 @@ Generate synthetic payment data (auto-analyzes CSV output).
 - `--psps <N>`: Number of PSPs to simulate. Default `1`.
 - `--multi-account-ratio <F>`: Share of payees with account identifier + BIC pairs. Default `0.15`.
 - `--non-eu-payee-ratio <F>`: Share of payees outside the EU. Default `0.10`.
+- `--no-account-payee-ratio <F>`: Share of payees with no account (Representative PSP flow). Default `0.02`.
 - `--output <PATH>`: Output file path. Default `data/synthetic/payments.csv`.
 
 Example:
@@ -40,6 +41,11 @@ Render CESOP PaymentData XML from CSV input.
 - `--output-dir <PATH>`: Output directory for XML files. Default `data/output`.
 - `--transmitting-country <MS|auto>`: Tax administration Member State. Default `auto`
   (derive from reporting PSP BIC).
+- `--licensed-countries <CSV>`: Comma-separated list of transmitting Member States.
+  When set, generate one report per country and assign payees to a transmitting
+  Member State that matches the payee country when possible; otherwise fall
+  back to the PSP home Member State (from the PSP BIC) or round-robin if needed.
+  Overrides `--transmitting-country`.
 
 Example:
 ```sh
@@ -64,6 +70,14 @@ errors for demo purposes.
 - `--output <PATH>`: Output CSV file. Default `data/synthetic/payments_invalid.csv`.
 - `--payee-error-rate <F>`: Share of payees to corrupt. Default `0.02`.
 - `--tx-error-rate <F>`: Share of transactions to corrupt. Default `0.01`.
+- `--seed <N>`: RNG seed for repeatable output.
+
+## `cesop-demo correct`
+Apply deterministic corrections to an invalid CSV so it can be re-rendered and
+validated.
+
+- `--input <PATH>`: Input CSV file. Default `data/synthetic/payments_invalid.csv`.
+- `--output <PATH>`: Output CSV file. Default `data/synthetic/payments_corrected.csv`.
 - `--seed <N>`: RNG seed for repeatable output.
 
 ## `cesop-demo validate`

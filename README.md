@@ -44,8 +44,10 @@ Demo invalid data flow:
 ```sh
 cargo run -- corrupt --input data/synthetic/payments.csv --output data/synthetic/payments_invalid.csv
 cargo run -- preflight --input data/synthetic/payments_invalid.csv
-cargo run -- render --input data/synthetic/payments_invalid.csv --output-dir data/output_invalid
-cargo run -- validate --input data/output_invalid --output data/output_invalid/validation.xml
+cargo run -- correct --input data/synthetic/payments_invalid.csv --output data/synthetic/payments_corrected.csv
+cargo run -- preflight --input data/synthetic/payments_corrected.csv
+cargo run -- render --input data/synthetic/payments_corrected.csv --output-dir data/output_corrected
+cargo run -- validate --input data/output_corrected --output data/output_corrected/validation.xml
 ```
 
 Run the demo script (default sizes 25k/100k/1m):

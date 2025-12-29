@@ -1,7 +1,9 @@
 mod analysis;
 mod cesop_xml;
+mod correct;
 mod corrupt;
 mod generator;
+mod location;
 mod logging;
 mod models;
 mod preflight;
@@ -34,6 +36,7 @@ enum Command {
     Generate(GenerateArgs),
     Analyze(AnalyzeArgs),
     Render(RenderArgs),
+    Correct(CorrectArgs),
     Corrupt(CorruptArgs),
     Preflight(PreflightArgs),
     Validate(ValidateArgs),
@@ -51,6 +54,8 @@ struct GenerateArgs {
     multi_account_ratio: f64,
     #[arg(long, default_value_t = 0.10)]
     non_eu_payee_ratio: f64,
+    #[arg(long, default_value_t = 0.02)]
+    no_account_payee_ratio: f64,
     #[arg(long, default_value = "data/synthetic/payments.csv")]
     output: PathBuf,
 }
@@ -73,6 +78,18 @@ struct RenderArgs {
     output_dir: PathBuf,
     #[arg(long, default_value = "auto")]
     transmitting_country: String,
+    #[arg(long)]
+    licensed_countries: Option<String>,
+}
+
+#[derive(Parser)]
+struct CorrectArgs {
+    #[arg(long, default_value = "data/synthetic/payments_invalid.csv")]
+    input: PathBuf,
+    #[arg(long, default_value = "data/synthetic/payments_corrected.csv")]
+    output: PathBuf,
+    #[arg(long)]
+    seed: Option<u64>,
 }
 
 #[derive(Parser)]
@@ -128,6 +145,7 @@ fn run() -> Result<(), String> {
         Command::Generate(args) => run_generate(args),
         Command::Analyze(args) => run_analyze(args),
         Command::Render(args) => run_render(args),
+        Command::Correct(args) => run_correct(args),
         Command::Corrupt(args) => run_corrupt(args),
         Command::Preflight(args) => run_preflight(args),
         Command::Validate(args) => run_validate(args),
@@ -150,6 +168,7 @@ fn run_generate(args: GenerateArgs) -> Result<(), String> {
         refund_ratio: 0.02,
         multi_account_ratio: args.multi_account_ratio,
         non_eu_payee_ratio: args.non_eu_payee_ratio,
+        no_account_payee_ratio: args.no_account_payee_ratio,
         year,
         quarter,
     };
@@ -163,10 +182,11 @@ fn run_generate(args: GenerateArgs) -> Result<(), String> {
         config.large_payees
     );
     log::info!(
-        "Generator options: psps={}, multi_account_ratio(account+BIC)={}, non_eu_payee_ratio={}",
+        "Generator options: psps={}, multi_account_ratio(account+BIC)={}, non_eu_payee_ratio={}, no_account_payee_ratio={}",
         config.psps,
         config.multi_account_ratio,
-        config.non_eu_payee_ratio
+        config.non_eu_payee_ratio,
+        config.no_account_payee_ratio
     );
 
     log::info!(
@@ -218,7 +238,22 @@ fn run_analyze(args: AnalyzeArgs) -> Result<(), String> {
 }
 
 fn run_render(args: RenderArgs) -> Result<(), String> {
-    let reports = build_reports_from_csv(&args.input, &args.transmitting_country)?;
+    let licensed_list = match args.licensed_countries {
+        Some(value) => {
+            let parsed = parse_country_list(&value)?;
+            if parsed.is_empty() {
+                None
+            } else {
+                Some(parsed)
+            }
+        }
+        None => None,
+    };
+    let reports = build_reports_from_csv(
+        &args.input,
+        &args.transmitting_country,
+        licensed_list.as_deref(),
+    )?;
     if reports.is_empty() {
         return Err("no reports generated (no cross-border data)".to_string());
     }
@@ -233,6 +268,55 @@ fn run_render(args: RenderArgs) -> Result<(), String> {
         emit_info_line(&format!("XML output: {}", path.display()));
     }
     Ok(())
+}
+
+fn run_correct(args: CorrectArgs) -> Result<(), String> {
+    let seed = args.seed.unwrap_or_else(random_seed);
+    let summary = correct::correct_csv(&args.input, &args.output, seed)?;
+
+    emit_info_line(&format!(
+        "Correct: input={} output={} seed={}",
+        args.input.display(),
+        args.output.display(),
+        seed
+    ));
+    emit_info_line(&format!(
+        "Corrected records: {} / {}",
+        summary.corrected_records, summary.total_records
+    ));
+    emit_info_line(&format!(
+        "Corrections: payee_name={} payee_country={} account_type={} account_value={} payer_country={} payer_source={} currency={} execution_time={}",
+        summary.payee_name_fixed,
+        summary.payee_country_fixed,
+        summary.payee_account_type_fixed,
+        summary.payee_account_value_fixed,
+        summary.payer_country_fixed,
+        summary.payer_source_fixed,
+        summary.currency_fixed,
+        summary.execution_time_fixed
+    ));
+    Ok(())
+}
+
+fn parse_country_list(input: &str) -> Result<Vec<String>, String> {
+    let mut countries: Vec<String> = Vec::new();
+    for raw in input.split(',') {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let code = trimmed.to_uppercase();
+        if code.len() != 2 || !code.chars().all(|ch| ch.is_ascii_alphabetic()) {
+            return Err(format!(
+                "invalid country code in --licensed-countries: {}",
+                trimmed
+            ));
+        }
+        if !countries.contains(&code) {
+            countries.push(code);
+        }
+    }
+    Ok(countries)
 }
 
 fn run_corrupt(args: CorruptArgs) -> Result<(), String> {
