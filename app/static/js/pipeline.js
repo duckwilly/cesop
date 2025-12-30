@@ -1,29 +1,586 @@
+// =============================================================================
+// ANIMATION MODULE - Reusable preview transition animations
+// =============================================================================
+
+const PreviewAnimations = (() => {
+  // Animation state
+  let currentAnimation = null;
+  let animationQueue = [];
+
+  // Configuration
+  const config = {
+    lineDelay: 250,        // Delay between staggered lines (ms)
+    scrollDuration: 600,   // Horizontal scroll duration (ms)
+    fadeOutDuration: 400,  // Fade out duration (ms)
+    fadeInDuration: 300,   // Fade in duration (ms)
+    typewriterDelay: 80,   // Delay between typewriter characters (ms)
+  };
+
+  // Cancel any running animation
+  function cancelAnimation() {
+    if (currentAnimation) {
+      currentAnimation.cancelled = true;
+      currentAnimation = null;
+    }
+    animationQueue = [];
+  }
+
+  // Create animation context for tracking cancellation
+  function createContext() {
+    const ctx = { cancelled: false };
+    currentAnimation = ctx;
+    return ctx;
+  }
+
+  // Sleep utility that respects cancellation
+  function sleep(ms, ctx) {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve(!ctx.cancelled);
+      }, ms);
+      if (ctx.cancelled) {
+        clearTimeout(timeout);
+        resolve(false);
+      }
+    });
+  }
+
+  function getScrollTarget(preEl, targetCols) {
+    if (!preEl || !Array.isArray(targetCols) || targetCols.length === 0) return null;
+
+    // Find the first data row's cells to measure column positions (skip header)
+    const rows = preEl.querySelectorAll('.csv-row');
+    const firstDataRow = rows.length > 1 ? rows[1] : rows[0];
+    if (!firstDataRow) return null;
+
+    const cells = firstDataRow.querySelectorAll('.csv-cell');
+    if (cells.length === 0) return null;
+
+    // Calculate scroll position to center on the target columns
+    const targetCells = targetCols
+      .map((col) => cells[Math.min(Math.max(col, 0), cells.length - 1)])
+      .filter(Boolean);
+    if (targetCells.length === 0) return null;
+
+    // Get the offset of the target cells relative to the pre element
+    const preRect = preEl.getBoundingClientRect();
+    const currentScroll = preEl.scrollLeft;
+
+    const offsets = targetCells.map((cell) => {
+      const cellRect = cell.getBoundingClientRect();
+      const left = (cellRect.left - preRect.left) + currentScroll;
+      return { left, right: left + cellRect.width };
+    });
+    const minOffset = Math.min(...offsets.map((offset) => offset.left));
+    const maxOffset = Math.max(...offsets.map((offset) => offset.right));
+
+    // Calculate where we need to scroll to show the target columns
+    // Center the entire column range in the visible area
+    const visibleWidth = preEl.clientWidth;
+    const targetCenter = (minOffset + maxOffset) / 2;
+    const maxScroll = Math.max(0, preEl.scrollWidth - visibleWidth);
+    return Math.max(0, Math.min(targetCenter - (visibleWidth * 0.5), maxScroll));
+  }
+
+  // Animate horizontal scroll to highlight specific columns
+  async function horizontalScrollToColumns(preEl, targetCols, ctx) {
+    if (ctx.cancelled || !preEl) return false;
+
+    const scrollTarget = getScrollTarget(preEl, targetCols);
+    if (scrollTarget === null) return false;
+
+    // Smooth scroll animation with longer duration
+    const startScroll = preEl.scrollLeft;
+    const distance = scrollTarget - startScroll;
+    const startTime = performance.now();
+    const duration = 800; // Slower, smoother scroll
+
+    return new Promise((resolve) => {
+      function animate(time) {
+        if (ctx.cancelled) {
+          resolve(false);
+          return;
+        }
+
+        const elapsed = time - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        // Ease in-out quad for smoother feel
+        const eased = progress < 0.5
+          ? 2 * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 2) / 2;
+
+        preEl.scrollLeft = startScroll + (distance * eased);
+
+        if (progress < 1) {
+          requestAnimationFrame(animate);
+        } else {
+          resolve(true);
+        }
+      }
+      requestAnimationFrame(animate);
+    });
+  }
+
+  function jumpToColumns(preEl, targetCols) {
+    if (!preEl) return false;
+    const scrollTarget = getScrollTarget(preEl, targetCols);
+    if (scrollTarget === null) return false;
+    preEl.scrollLeft = scrollTarget;
+    return true;
+  }
+
+  // Cross-border filter animation sequence
+  // 1. Scroll to country columns
+  // 2. Highlight non-cross-border (excluded) rows
+  // Note: Scroll-out happens on transition to next step, not here
+  async function crossBorderFilterSequence(preEl, ctx) {
+    if (ctx.cancelled || !preEl) return false;
+
+    // Step 1: Smooth scroll to country columns (payer_country=4, payee_country=6)
+    await horizontalScrollToColumns(preEl, [4, 6], ctx);
+    if (ctx.cancelled) return false;
+
+    await sleep(300, ctx);
+    if (ctx.cancelled) return false;
+
+    // Step 2: Highlight excluded rows (domestic ones that fail the filter)
+    const excludedRows = preEl.querySelectorAll('.csv-row[data-excluded="true"]');
+
+    // Stagger the highlighting for visual effect
+    for (let i = 0; i < excludedRows.length; i++) {
+      if (ctx.cancelled) return false;
+      excludedRows[i].classList.add('csv-row-highlight-excluded');
+      await sleep(150, ctx);
+    }
+
+    return true;
+  }
+
+  // Animate content scrolling up and out of view
+  async function scrollLinesOut(contentEl, direction = 'up', ctx) {
+    if (ctx.cancelled || !contentEl) return false;
+
+    // Add scroll-out animation to the pre element content
+    const translateY = direction === 'up' ? '-30px' : '30px';
+
+    // Apply transition
+    contentEl.style.transition = 'transform 0.35s ease-in, opacity 0.35s ease-in';
+    contentEl.style.transform = `translateY(${translateY})`;
+    contentEl.style.opacity = '0';
+
+    const completed = await sleep(350, ctx);
+
+    // Reset styles (content will be replaced anyway)
+    contentEl.style.transition = '';
+    contentEl.style.transform = '';
+    contentEl.style.opacity = '';
+
+    return completed;
+  }
+
+  // Animate lines appearing one by one with stagger effect
+  async function staggeredLinesIn(preEl, content, ctx, options = {}) {
+    if (ctx.cancelled || !preEl) return false;
+
+    const {
+      delay = config.lineDelay,
+      fromDirection = 'below',
+      preserveFormatting = true,
+    } = options;
+
+    const lines = content.split('\n');
+    preEl.innerHTML = '';
+    preEl.classList.add('anim-stagger-container');
+
+    for (let i = 0; i < lines.length; i++) {
+      if (ctx.cancelled) return false;
+
+      const lineEl = document.createElement('span');
+      lineEl.className = `anim-line anim-line-hidden anim-from-${fromDirection}`;
+      lineEl.innerHTML = preserveFormatting ? lines[i] : escapeHtml(lines[i]);
+      preEl.appendChild(lineEl);
+
+      // Trigger reflow then animate in
+      void lineEl.offsetHeight;
+
+      await sleep(delay, ctx);
+      if (ctx.cancelled) return false;
+
+      lineEl.classList.remove('anim-line-hidden');
+      lineEl.classList.add('anim-line-visible');
+    }
+
+    return true;
+  }
+
+  // Typewriter effect - characters appear one by one per line
+  async function typewriterLines(preEl, content, ctx, options = {}) {
+    if (ctx.cancelled || !preEl) return false;
+
+    const {
+      charDelay = config.typewriterDelay,
+      lineDelay = config.lineDelay,
+    } = options;
+
+    const lines = content.split('\n');
+    preEl.innerHTML = '';
+    preEl.classList.add('anim-typewriter-container');
+
+    for (let i = 0; i < lines.length; i++) {
+      if (ctx.cancelled) return false;
+
+      const lineEl = document.createElement('span');
+      lineEl.className = 'anim-typewriter-line';
+      preEl.appendChild(lineEl);
+
+      const line = lines[i];
+      for (let j = 0; j < line.length; j++) {
+        if (ctx.cancelled) return false;
+
+        lineEl.textContent += line[j];
+        await sleep(charDelay, ctx);
+      }
+
+      if (i < lines.length - 1) {
+        await sleep(lineDelay - charDelay * line.length, ctx);
+      }
+    }
+
+    return true;
+  }
+
+  // Scroll lines in from a direction
+  async function scrollLinesIn(contentEl, direction = 'below', ctx, durationMs = null) {
+    if (ctx.cancelled || !contentEl) return false;
+
+    const duration = durationMs ?? config.fadeInDuration;
+    if (durationMs !== null) {
+      contentEl.style.setProperty('--scroll-in-duration', `${duration}ms`);
+    } else {
+      contentEl.style.removeProperty('--scroll-in-duration');
+    }
+
+    contentEl.classList.add('anim-scroll-in', `anim-from-${direction}`);
+
+    // Trigger reflow
+    void contentEl.offsetHeight;
+
+    contentEl.classList.add('anim-scroll-in-active');
+
+    const completed = await sleep(duration, ctx);
+
+    contentEl.classList.remove('anim-scroll-in', `anim-from-${direction}`, 'anim-scroll-in-active');
+    if (durationMs !== null) {
+      contentEl.style.removeProperty('--scroll-in-duration');
+    }
+    return completed;
+  }
+
+  // Highlight flash animation for specific elements
+  async function flashHighlight(preEl, selector, ctx) {
+    if (ctx.cancelled || !preEl) return false;
+
+    const elements = preEl.querySelectorAll(selector);
+    elements.forEach(el => el.classList.add('anim-flash'));
+
+    if (!await sleep(800, ctx)) return false;
+
+    elements.forEach(el => el.classList.remove('anim-flash'));
+    return true;
+  }
+
+  // Cross-fade between two content states
+  async function crossFade(preEl, newContent, ctx, isHtml = false) {
+    if (ctx.cancelled || !preEl) return false;
+
+    preEl.classList.add('anim-fade-out');
+
+    if (!await sleep(config.fadeOutDuration / 2, ctx)) return false;
+
+    if (isHtml) {
+      preEl.innerHTML = newContent;
+    } else {
+      preEl.textContent = newContent;
+    }
+
+    preEl.classList.remove('anim-fade-out');
+    preEl.classList.add('anim-fade-in');
+
+    if (!await sleep(config.fadeInDuration, ctx)) return false;
+
+    preEl.classList.remove('anim-fade-in');
+    return true;
+  }
+
+  // Combined animation: scroll out current, then stagger in new content
+  async function transitionWithStagger(preEl, newContent, ctx, options = {}) {
+    if (ctx.cancelled || !preEl) return false;
+
+    // Scroll current content out
+    if (!await scrollLinesOut(preEl, options.outDirection || 'up', ctx)) return false;
+
+    // Stagger new content in
+    if (!await staggeredLinesIn(preEl, newContent, ctx, options)) return false;
+
+    return true;
+  }
+
+  // Public API
+  return {
+    config,
+    cancelAnimation,
+    createContext,
+    sleep,
+    horizontalScrollToColumns,
+    jumpToColumns,
+    scrollLinesOut,
+    scrollLinesIn,
+    staggeredLinesIn,
+    typewriterLines,
+    flashHighlight,
+    crossFade,
+    transitionWithStagger,
+    crossBorderFilterSequence,
+  };
+})();
+
+// =============================================================================
+// TOOLTIP MODULE - Interactive tooltips for highlighted elements
+// =============================================================================
+
+const Tooltips = (() => {
+  let tooltipEl = null;
+  let activeTarget = null;
+
+  // Tooltip content definitions for different contexts
+  const tooltipContent = {
+    'cross-border-same': {
+      title: 'Domestic Transaction',
+      body: 'Payer and payee are in the same country. This transaction is excluded from CESOP reporting.',
+      type: 'excluded',
+    },
+    'cross-border-diff': {
+      title: 'Cross-border Transaction',
+      body: 'Payer and payee are in different EU Member States. This transaction is in scope for CESOP.',
+      type: 'included',
+    },
+    'error-invalid-country': {
+      title: 'Invalid Country Code',
+      body: 'Country code must be a valid ISO 3166-1 alpha-2 code (e.g., "DE", "FR"). "ZZ" is not valid.',
+      type: 'error',
+    },
+    'error-invalid-currency': {
+      title: 'Invalid Currency Code',
+      body: 'Currency must be a valid ISO 4217 code. "EURO" should be "EUR".',
+      type: 'error',
+    },
+    'error-missing-payee-name': {
+      title: 'Missing Payee Name',
+      body: 'Payee name is required for reporting. This field is blank.',
+      type: 'error',
+    },
+    'error-invalid-account-type': {
+      title: 'Invalid Account Type',
+      body: 'Account type must be a supported identifier (e.g., IBAN/OBAN/BIC/Other). "BADTYPE" is not valid.',
+      type: 'error',
+    },
+    'error-invalid-account': {
+      title: 'Invalid Account Identifier',
+      body: 'Account value does not match the expected format for its type (e.g., IBAN checksum).',
+      type: 'error',
+    },
+    'error-invalid-payer-source': {
+      title: 'Invalid Payer Source',
+      body: 'Payer MS source must be a valid identifier source (e.g., IBAN/OBAN/BIC/Other).',
+      type: 'error',
+    },
+    'error-payer-role': {
+      title: 'Payer PSP Role',
+      body: 'This PSP is the payer\'s PSP. Only report if payee PSP is outside the EU.',
+      type: 'warning',
+    },
+    'threshold-above': {
+      title: 'Above Threshold',
+      body: 'This payee received >25 cross-border payments this quarter. Reporting is required.',
+      type: 'included',
+    },
+    'threshold-below': {
+      title: 'Below Threshold',
+      body: 'This payee received ≤25 cross-border payments. No reporting required for this payee.',
+      type: 'excluded',
+    },
+    'correction-applied': {
+      title: 'Correction Applied',
+      body: 'This field was automatically corrected based on deterministic rules.',
+      type: 'success',
+    },
+  };
+
+  function init() {
+    // Create tooltip element if it doesn't exist
+    if (!tooltipEl) {
+      tooltipEl = document.createElement('div');
+      tooltipEl.className = 'preview-tooltip';
+      tooltipEl.innerHTML = `
+        <div class="tooltip-header">
+          <span class="tooltip-icon"></span>
+          <span class="tooltip-title"></span>
+        </div>
+        <div class="tooltip-body"></div>
+      `;
+      document.body.appendChild(tooltipEl);
+    }
+  }
+
+  function show(target, contentKey, customContent = null) {
+    if (!tooltipEl) init();
+
+    const content = customContent || tooltipContent[contentKey];
+    if (!content) return;
+
+    activeTarget = target;
+
+    tooltipEl.querySelector('.tooltip-title').textContent = content.title;
+    tooltipEl.querySelector('.tooltip-body').textContent = content.body;
+    tooltipEl.className = `preview-tooltip is-visible tooltip-${content.type || 'info'}`;
+
+    positionTooltip(target);
+  }
+
+  function hide() {
+    if (tooltipEl) {
+      tooltipEl.classList.remove('is-visible');
+    }
+    activeTarget = null;
+  }
+
+  function positionTooltip(target) {
+    if (!tooltipEl || !target) return;
+
+    const rect = target.getBoundingClientRect();
+    const tooltipRect = tooltipEl.getBoundingClientRect();
+
+    let top = rect.bottom + 8;
+    let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
+
+    // Keep within viewport
+    if (left < 8) left = 8;
+    if (left + tooltipRect.width > window.innerWidth - 8) {
+      left = window.innerWidth - tooltipRect.width - 8;
+    }
+
+    // Flip above if not enough space below
+    if (top + tooltipRect.height > window.innerHeight - 8) {
+      top = rect.top - tooltipRect.height - 8;
+      tooltipEl.classList.add('tooltip-above');
+    } else {
+      tooltipEl.classList.remove('tooltip-above');
+    }
+
+    tooltipEl.style.top = `${top}px`;
+    tooltipEl.style.left = `${left}px`;
+  }
+
+  function attachToPreview(preEl) {
+    if (!preEl) return;
+
+    // Use mouseover/mouseout instead of mouseenter/mouseleave for proper event delegation
+    // mouseover/mouseout bubble up, while mouseenter/mouseleave don't
+    preEl.addEventListener('mouseover', handleMouseOver);
+    preEl.addEventListener('mouseout', handleMouseOut);
+    preEl.addEventListener('click', handleClick);
+  }
+
+  let hoverTarget = null;
+
+  function resolveTooltipTarget(rawTarget) {
+    if (!rawTarget) {
+      return null;
+    }
+    const element = rawTarget.nodeType === 1 ? rawTarget : rawTarget.parentElement;
+    return element ? element.closest('[data-tooltip]') : null;
+  }
+
+  function handleMouseOver(e) {
+    const target = resolveTooltipTarget(e.target);
+    if (target && target !== hoverTarget) {
+      hoverTarget = target;
+      const key = target.dataset.tooltip;
+      show(target, key);
+    }
+  }
+
+  function handleMouseOut(e) {
+    const target = resolveTooltipTarget(e.target);
+    if (target) {
+      // Check if we're moving to another element inside the same tooltip target
+      const relatedTarget = e.relatedTarget;
+      if (!target.contains(relatedTarget)) {
+        hoverTarget = null;
+        hide();
+      }
+    }
+  }
+
+  function handleClick(e) {
+    const target = resolveTooltipTarget(e.target);
+    if (target) {
+      e.stopPropagation();
+      const key = target.dataset.tooltip;
+      if (activeTarget === target) {
+        hide();
+      } else {
+        show(target, key);
+      }
+    }
+  }
+
+  // Close tooltip when clicking outside
+  document.addEventListener('click', (e) => {
+    if (tooltipEl && !tooltipEl.contains(e.target) && !resolveTooltipTarget(e.target)) {
+      hide();
+    }
+  });
+
+  return {
+    init,
+    show,
+    hide,
+    attachToPreview,
+    tooltipContent,
+  };
+})();
+
+// =============================================================================
+// APPLICATION STATE
+// =============================================================================
+
 const sampleState = {
   rows: 10000,
-  size: "~2.6 MB",
-  payees: 420,
-  crossBorder: 8200,
-  nonCrossBorder: 1800,
-  reportable: 3420,
-  belowThreshold: 4780,
-  reportablePayees: 128,
+  size: "~3.3 MB",
+  payees: 417,
+  crossBorder: 8260,
+  nonCrossBorder: 1740,
+  reportable: 2540,
+  belowThreshold: 5720,
+  reportablePayees: 29,
   memberStates: 6,
-  memberStateCodes: ["DK", "SE", "DE", "FR", "IE", "NL"],
+  memberStateCodes: ["AT", "BG", "CZ", "DK", "ES", "FI"],
   xmlFiles: [
-    "cesop_2025_Q4_DK_MLIFDKV9.xml",
-    "cesop_2025_Q4_SE_MLIFDKV9.xml",
-    "cesop_2025_Q4_DE_MLIFDKV9.xml",
-    "cesop_2025_Q4_FR_MLIFDKV9.xml",
-    "cesop_2025_Q4_IE_MLIFDKV9.xml",
-    "cesop_2025_Q4_NL_MLIFDKV9.xml",
+    "cesop_2025_Q4_AT_AFBQBGKT.xml",
+    "cesop_2025_Q4_BG_AFBQBGKT.xml",
+    "cesop_2025_Q4_CZ_AFBQBGKT.xml",
+    "cesop_2025_Q4_DK_AFBQBGKT.xml",
+    "cesop_2025_Q4_ES_AFBQBGKT.xml",
+    "cesop_2025_Q4_FI_AFBQBGKT.xml",
   ],
-  errors: 16,
-  corrections: 12,
-  preflightCorruptErrors: 16,
+  errors: 458,
+  corrections: 458,
+  preflightCorruptErrors: 458,
   preflightCorrectedErrors: 0,
   reports: 6,
-  passRate: "98.9%",
-  validationTime: "1.6s",
+  passRate: "100%",
+  validationTime: "0.7s",
 };
 
 const steps = [
@@ -34,25 +591,55 @@ const steps = [
     preview: {
       type: "csv",
       header: [
-        "psp_id",
-        "payee_id",
-        "payee_country",
-        "payer_country",
+        "payment_id",
+        "execution_time",
         "amount",
         "currency",
-        "tx_date",
-        "account_type",
-        "account_id",
+        "payer_country",
+        "payer_ms_source",
+        "payee_country",
+        "payee_id",
+        "payee_name",
+        "payee_account",
+        "payee_account_type",
+        "payee_tax_id",
+        "payee_vat_id",
+        "payee_email",
+        "payee_web",
+        "payee_address_line",
+        "payee_city",
+        "payee_postcode",
+        "payment_method",
+        "initiated_at_pos",
+        "is_refund",
+        "corr_payment_id",
+        "psp_role",
+        "payee_psp_id",
+        "payee_psp_name",
+        "psp_id",
+        "psp_name",
       ],
       rows: [
-        ["MLIFDKV9", "PAYEE-00412", "DK", "SE", "159.98", "EUR", "2025-10-04", "IBAN", "DK5000400440116243"],
-        ["MLIFDKV9", "PAYEE-00412", "DK", "SE", "22.14", "EUR", "2025-10-19", "IBAN", "DK5000400440116243"],
-        ["MLIFDKV9", "PAYEE-01077", "DK", "NO", "312.00", "EUR", "2025-11-02", "IBAN", "DK9251000190000210"],
-        ["MLIFDKV9", "PAYEE-01902", "DK", "SE", "145.50", "EUR", "2025-11-14", "IBAN", "DK2940011001092214"],
-        ["MLIFDKV9", "PAYEE-02311", "DK", "DE", "49.95", "EUR", "2025-12-01", "IBAN", "DK7300400440116243"],
-        ["MLIFDKV9", "PAYEE-03118", "DK", "FR", "92.40", "EUR", "2025-12-02", "IBAN", "DK2900400440114120"],
-        ["MLIFDKV9", "PAYEE-04009", "DK", "IE", "18.75", "EUR", "2025-12-03", "IBAN", "DK9900400440118431"],
+        // Cross-border: HU -> FI
+        ["fea76c07-fe56-4f95-9b1a-9cf62ec62a9f", "2025-10-27T06:23:08.996Z", "82.45", "HUF", "HU", "IBAN", "FI", "MER000216", "Victorious Industries LLC", "FI9257441723360727", "IBAN", "", "", "billing@victorious-industries-llc.example", "https://victorious-industries-llc.example", "207 Garden St", "Prague", "09331", "Marketplace", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // DOMESTIC: FR -> FR (will be excluded)
+        ["f2a92871-3afe-45c8-adbe-804cf08fcb71", "2025-11-19T20:01:29.814Z", "381.63", "EUR", "FR", "IBAN", "FR", "MER000366", "Ramillies Consulting Group", "FR7302301496564619556692558", "IBAN", "", "FR599011876", "billing@ramillies-consulting-group.example", "https://ramillies-consulting-group.example", "18 Mill St", "Dublin", "99458", "Money Remittance", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: DK -> ES
+        ["391488b3-08e0-44d5-9f5b-9fbdcbaf3d5b", "2025-12-09T13:16:52.328Z", "1159.19", "DKK", "DK", "IBAN", "ES", "MER000288", "Faramir Innovation NV", "ES9727918921959377644152", "IBAN", "TAXES85136604", "", "billing@faramir-innovation-nv.example", "https://faramir-innovation-nv.example", "180 Oak St", "Amsterdam", "59450", "Bank transfer", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // DOMESTIC: DE -> DE (will be excluded)
+        ["a8b3c2d1-e4f5-6789-abcd-ef0123456789", "2025-11-05T14:32:11.442Z", "892.50", "EUR", "DE", "IBAN", "DE", "MER000192", "Berlin Tech Solutions GmbH", "DE89370400440532013000", "IBAN", "TAXDE12345678", "DE123456789", "billing@berlin-tech.example", "https://berlin-tech.example", "45 Unter den Linden", "Berlin", "10117", "Card payment", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: SI -> PT
+        ["561b87fe-b0ae-46e0-8e00-6bfbd2ccd24c", "2025-10-22T18:28:06.814Z", "1545.23", "EUR", "SI", "IBAN", "PT", "MER000075", "Hermes Logistics LLC", "PT87150602618998901532246", "IBAN", "TAXPT75841280", "PT429556609", "billing@hermes-logistics-llc.example", "https://hermes-logistics-llc.example", "110 South St", "Warsaw", "96231", "Money Remittance", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: RO -> AT
+        ["f068e199-0be8-4866-9df2-9e07b846a0e0", "2025-10-18T23:18:27.076Z", "1156.99", "RON", "RO", "IBAN", "AT", "MER000364", "Malaya Collective NV", "AT471597898563119790", "IBAN", "TAXAT68443464", "AT756956672", "billing@malaya-collective-nv.example", "https://malaya-collective-nv.example", "30 Lake St", "Ljubljana", "01753", "E-money", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: RO -> NL
+        ["16d32802-58d4-4308-853a-23a32c3e3dc5", "2025-12-20T08:05:25.039Z", "228.83", "RON", "RO", "IBAN", "NL", "MER000127", "Caledonia Partners NV", "NL4296581176785813", "IBAN", "TAXNL86159362", "NL901866680", "billing@caledonia-partners-nv.example", "https://caledonia-partners-nv.example", "42 Station St", "Copenhagen", "71627", "Marketplace", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
       ],
+    },
+    // Animation config for this step
+    animation: {
+      onEnter: null,
+      onExit: 'scrollOut',
     },
     rule: {
       title: "Data requirements",
@@ -79,26 +666,59 @@ const steps = [
     preview: {
       type: "csv",
       header: [
-        "psp_id",
-        "payee_id",
-        "payee_country",
-        "payer_country",
+        "payment_id",
+        "execution_time",
         "amount",
         "currency",
-        "tx_date",
-        "account_type",
-        "account_id",
+        "payer_country",
+        "payer_ms_source",
+        "payee_country",
+        "payee_id",
+        "payee_name",
+        "payee_account",
+        "payee_account_type",
+        "payee_tax_id",
+        "payee_vat_id",
+        "payee_email",
+        "payee_web",
+        "payee_address_line",
+        "payee_city",
+        "payee_postcode",
+        "payment_method",
+        "initiated_at_pos",
+        "is_refund",
+        "corr_payment_id",
+        "psp_role",
+        "payee_psp_id",
+        "payee_psp_name",
+        "psp_id",
+        "psp_name",
       ],
       rows: [
-        ["MLIFDKV9", "PAYEE-00412", "DK", "SE", "159.98", "EUR", "2025-10-04", "IBAN", "DK5000400440116243"],
-        ["MLIFDKV9", "PAYEE-00918", "DK", "DK", "64.12", "EUR", "2025-11-05", "IBAN", "DK8011000190100101"],
-        ["MLIFDKV9", "PAYEE-01077", "DK", "NO", "312.00", "EUR", "2025-11-02", "IBAN", "DK9251000190000210"],
-        ["MLIFDKV9", "PAYEE-01902", "DK", "SE", "145.50", "EUR", "2025-11-14", "IBAN", "DK2940011001092214"],
-        ["MLIFDKV9", "PAYEE-02311", "DK", "DE", "49.95", "EUR", "2025-12-01", "IBAN", "DK7300400440116243"],
-        ["MLIFDKV9", "PAYEE-03118", "DK", "FR", "92.40", "EUR", "2025-12-02", "IBAN", "DK2900400440114120"],
-        ["MLIFDKV9", "PAYEE-04009", "DK", "IE", "18.75", "EUR", "2025-12-03", "IBAN", "DK9900400440118431"],
+        // Cross-border: HU -> FI (included)
+        ["fea76c07-fe56-4f95-9b1a-9cf62ec62a9f", "2025-10-27T06:23:08.996Z", "82.45", "HUF", "HU", "IBAN", "FI", "MER000216", "Victorious Industries LLC", "FI9257441723360727", "IBAN", "", "", "billing@victorious-industries-llc.example", "https://victorious-industries-llc.example", "207 Garden St", "Prague", "09331", "Marketplace", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // DOMESTIC: FR -> FR (excluded - highlighted)
+        ["f2a92871-3afe-45c8-adbe-804cf08fcb71", "2025-11-19T20:01:29.814Z", "381.63", "EUR", "FR", "IBAN", "FR", "MER000366", "Ramillies Consulting Group", "FR7302301496564619556692558", "IBAN", "", "FR599011876", "billing@ramillies-consulting-group.example", "https://ramillies-consulting-group.example", "18 Mill St", "Dublin", "99458", "Money Remittance", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: DK -> ES (included)
+        ["391488b3-08e0-44d5-9f5b-9fbdcbaf3d5b", "2025-12-09T13:16:52.328Z", "1159.19", "DKK", "DK", "IBAN", "ES", "MER000288", "Faramir Innovation NV", "ES9727918921959377644152", "IBAN", "TAXES85136604", "", "billing@faramir-innovation-nv.example", "https://faramir-innovation-nv.example", "180 Oak St", "Amsterdam", "59450", "Bank transfer", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // DOMESTIC: DE -> DE (excluded - highlighted)
+        ["a8b3c2d1-e4f5-6789-abcd-ef0123456789", "2025-11-05T14:32:11.442Z", "892.50", "EUR", "DE", "IBAN", "DE", "MER000192", "Berlin Tech Solutions GmbH", "DE89370400440532013000", "IBAN", "TAXDE12345678", "DE123456789", "billing@berlin-tech.example", "https://berlin-tech.example", "45 Unter den Linden", "Berlin", "10117", "Card payment", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: SI -> PT (included)
+        ["561b87fe-b0ae-46e0-8e00-6bfbd2ccd24c", "2025-10-22T18:28:06.814Z", "1545.23", "EUR", "SI", "IBAN", "PT", "MER000075", "Hermes Logistics LLC", "PT87150602618998901532246", "IBAN", "TAXPT75841280", "PT429556609", "billing@hermes-logistics-llc.example", "https://hermes-logistics-llc.example", "110 South St", "Warsaw", "96231", "Money Remittance", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: RO -> AT (included)
+        ["f068e199-0be8-4866-9df2-9e07b846a0e0", "2025-10-18T23:18:27.076Z", "1156.99", "RON", "RO", "IBAN", "AT", "MER000364", "Malaya Collective NV", "AT471597898563119790", "IBAN", "TAXAT68443464", "AT756956672", "billing@malaya-collective-nv.example", "https://malaya-collective-nv.example", "30 Lake St", "Ljubljana", "01753", "E-money", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        // Cross-border: RO -> NL (included)
+        ["16d32802-58d4-4308-853a-23a32c3e3dc5", "2025-12-20T08:05:25.039Z", "228.83", "RON", "RO", "IBAN", "NL", "MER000127", "Caledonia Partners NV", "NL4296581176785813", "IBAN", "TAXNL86159362", "NL901866680", "billing@caledonia-partners-nv.example", "https://caledonia-partners-nv.example", "42 Station St", "Copenhagen", "71627", "Marketplace", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
       ],
-      highlights: [{ row: 1, cols: [2, 3] }],
+      // Highlight domestic transactions (rows 1 and 3, columns 4 and 6 are payer_country and payee_country)
+      highlights: [
+        { row: 1, cols: [4, 6], tooltip: 'cross-border-same', excluded: true },
+        { row: 3, cols: [4, 6], tooltip: 'cross-border-same', excluded: true },
+      ],
+    },
+    animation: {
+      onEnter: 'crossBorderFilter', // Full animation: scroll to countries, highlight, strikethrough
+      onExit: 'scrollOut', // Scroll out when transitioning to next step
     },
     rule: {
       title: "Scope determination",
@@ -123,7 +743,11 @@ const steps = [
     preview: {
       type: "text",
       value:
-        "PAYEE-00412 (SE) -> 34 payments\nPAYEE-01902 (DE) -> 41 payments\nPAYEE-02311 (IE) -> 29 payments\nPAYEE-03118 (FR) -> 27 payments\nPAYEE-04009 (IE) -> 31 payments\nPAYEE-05031 (SE) -> 26 payments\nPAYEE-05302 (NL) -> 33 payments\nPAYEE-06110 (FR) -> 28 payments",
+        "MER000240 (CH) -> 123 payments\nMER000037 (NO) -> 123 payments\nMER000230 (NL) -> 112 payments\nMER000075 (PT) -> 105 payments\nMER000056 (DK) -> 103 payments\nMER000003 (BG) -> 103 payments\nMER000338 (CZ) -> 101 payments\nMER000345 (IT) -> 97 payments",
+    },
+    animation: {
+      onEnter: 'staggerLines', // Lines appear one by one
+      onExit: 'scrollOut',
     },
     rule: {
       title: "The >25 rule",
@@ -149,30 +773,56 @@ const steps = [
     preview: {
       type: "csv",
       header: [
-        "psp_id",
-        "payee_id",
-        "payee_country",
-        "payer_country",
+        "payment_id",
+        "execution_time",
         "amount",
         "currency",
-        "tx_date",
-        "account_type",
-        "account_id",
+        "payer_country",
+        "payer_ms_source",
+        "payee_country",
+        "payee_id",
+        "payee_name",
+        "payee_account",
+        "payee_account_type",
+        "payee_tax_id",
+        "payee_vat_id",
+        "payee_email",
+        "payee_web",
+        "payee_address_line",
+        "payee_city",
+        "payee_postcode",
+        "payment_method",
+        "initiated_at_pos",
+        "is_refund",
+        "corr_payment_id",
+        "psp_role",
+        "payee_psp_id",
+        "payee_psp_name",
+        "psp_id",
+        "psp_name",
       ],
       rows: [
-        ["MLIFDKV9", "PAYEE-01902", "DK", "ZZ", "145.50", "EUR", "2025-11-14", "IBAN", "DK2940011001092214"],
-        ["MLIFDKV9", "PAYEE-02134", "DK", "FR", "88.10", "EURO", "2025-11-22", "IBAN", "DK1200009882311231"],
-        ["MLIFDKV9", "PAYEE-02520", "DK", "SE", "55.00", "EUR", "2025-11-27", "IBAN", "DK4500003111988812"],
-        ["MLIFDKV9", "PAYEE-02702", "DK", "DE", "410.20", "EURO", "2025-12-02", "IBAN", "DK0900003111988888"],
-        ["MLIFDKV9", "PAYEE-02851", "DK", "XX", "12.40", "EUR", "2025-12-04", "IBAN", "DK1100003111987777"],
-        ["MLIFDKV9", "PAYEE-03118", "DK", "FR", "92.40", "EUR", "2025-12-02", "IBAN", "DK2900400440114120"],
-        ["MLIFDKV9", "PAYEE-04009", "DK", "IE", "18.75", "EUR", "2025-12-03", "IBAN", "DK9900400440118431"],
+        ["f3f457c9-fd49-4e24-9a8b-c6536711fb66", "2025-10-10T13:28:28.682Z", "2231.79", "EUR", "LU", "IBAN", "LV", "MER000397", "Harbor Foods Industries NV", "ACC7291045512", "BADTYPE", "TAXLV09116124", "LV203135331", "billing@harbor-foods-industries-nv.example", "https://harbor-foods-industries-nv.example", "138 High St", "Bucharest", "09153", "Bank transfer", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        ["f78bee54-3cbd-4bbc-92c1-dec735c95136", "2025-11-03T06:29:02.199Z", "1434.79", "EUR", "NL", "IBAN", "PL", "MER000406", "Golden Labs Collective BV", "ZZ00123456789012", "IBAN", "TAXPL91541504", "PL269978265", "billing@golden-labs-collective-bv.example", "https://golden-labs-collective-bv.example", "153 Garden St", "Paris", "85881", "Marketplace", "true", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        ["02f65696-b65e-45f5-a95b-ad8b3dbd750f", "2025-10-17T12:49:46.180Z", "483.76", "EUR", "BE", "IBAN", "NO", "MER000037", "", "NO9386011117947", "IBAN", "TAXNO58561246", "", "billing@trafalgar-studios-llc.example", "https://trafalgar-studios-llc.example", "69 Queen St", "Berlin", "98188", "Bank transfer", "false", "false", "", "PAYER", "AJYJCADYGCB", "Harborline Processing", "AFBQBGKT", "BlueBridge PSP"],
+        ["f10cabe7-da0c-43c6-ae30-e8466b7f4a51", "2025-11-13T03:17:30.627Z", "1433.12", "EUR", "ZZ", "IBAN", "HU", "MER000330", "Black Prince Forge Group", "HU37653306410429983812139410", "IBAN", "TAXHU78695928", "HU937958009", "billing@black-prince-forge-group.example", "https://black-prince-forge-group.example", "32 Mill St", "Vienna", "32459", "E-money", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
+        ["41865007-426c-4b78-8e08-df4e5c1094de", "2025-12-01T17:56:56.800Z", "383.21", "EUR", "LT", "BAD", "NO", "MER000037", "Trafalgar Studios LLC", "NO9386011117947", "IBAN", "TAXNO58561246", "", "billing@trafalgar-studios-llc.example", "https://trafalgar-studios-llc.example", "69 Queen St", "Berlin", "98188", "Marketplace", "false", "false", "", "PAYER", "AJYJCADYGCB", "Harborline Processing", "AFBQBGKT", "BlueBridge PSP"],
+        ["d986a173-cca1-4caf-9ccd-beb3b6cfabf8", "2025-11-02T08:47:48.054Z", "2126.30", "EURO", "CY", "BIC", "CH", "MER000240", "Terror Technologies Ltd", "CH4092571161475049431", "IBAN", "", "", "billing@terror-technologies-ltd.example", "https://terror-technologies-ltd.example", "51 Cedar St", "Sofia", "43984", "Direct debit", "true", "false", "", "PAYER", "AJYJCADYGCB", "Harborline Processing", "AFBQBGKT", "BlueBridge PSP"],
+        ["8230f78d-baf0-4bba-83c4-3d8ec1e9792c", "2025-12-31T19:44:47.688Z", "491.93", "EUR", "SK", "IBAN", "ZZ", "MER000406", "Golden Labs Collective BV", "PL61109024025234567890123456", "IBAN", "TAXPL91541504", "PL269978265", "billing@golden-labs-collective-bv.example", "https://golden-labs-collective-bv.example", "153 Garden St", "Paris", "85881", "E-money", "false", "false", "", "PAYEE", "AFBQBGKT", "BlueBridge PSP", "AFBQBGKT", "BlueBridge PSP"],
       ],
       highlights: [
-        { row: 0, cols: [3] },
-        { row: 1, cols: [5] },
-        { row: 4, cols: [3] },
+        { row: 0, cols: [10], tooltip: 'error-invalid-account-type' },
+        { row: 1, cols: [9], tooltip: 'error-invalid-account' },
+        { row: 2, cols: [8], tooltip: 'error-missing-payee-name' },
+        { row: 3, cols: [4], tooltip: 'error-invalid-country' },
+        { row: 4, cols: [5], tooltip: 'error-invalid-payer-source' },
+        { row: 5, cols: [3], tooltip: 'error-invalid-currency' },
+        { row: 6, cols: [6], tooltip: 'error-invalid-country' },
       ],
+    },
+    animation: {
+      onEnter: 'errorDetection', // Scroll in then scroll to error columns
+      onExit: 'scrollOut',
     },
     rule: {
       title: "Data quality checks",
@@ -182,7 +832,7 @@ const steps = [
         "Country codes: ISO 3166-1 alpha-2",
         "Currency codes: ISO 4217",
         "Date formats: YYYY-MM-DD",
-        "Account identifiers: IBAN or other standard",
+        "Account identifiers: IBAN/OBAN/BIC/Other",
       ],
     },
     metrics: [
@@ -197,12 +847,19 @@ const steps = [
     meta: "{corrections} fixes applied | audit log saved",
     preview: {
       type: "diff",
-      recordId: "PAYEE-01902",
+      recordId: "Correction Summary",
+      compact: false,
       changes: [
-        { field: "payer_country", before: "ZZ", after: "SE" },
-        { field: "currency", before: "EURO", after: "EUR" },
-        { field: "tx_date", before: "2025-13-15", after: "2025-12-15" },
+        { field: "payee_account_type", before: "BADTYPE", after: "IBAN", rule: "Account type fix" },
+        { field: "payee_account", before: "ZZ00123456789012", after: "PL61109024025234567890123456", rule: "Account identifier fix" },
+        { field: "payee_name", before: "", after: "Payee MER000037", rule: "Missing->placeholder" },
+        { field: "payer_ms_source", before: "BAD", after: "IBAN", rule: "Identifier source fix" },
+        { field: "currency", before: "EURO", after: "EUR", rule: "ISO 4217 normalize" },
       ],
+    },
+    animation: {
+      onEnter: 'staggerDiff', // Show corrections one by one
+      onExit: 'scrollOut',
     },
     rule: {
       title: "Audit trail",
@@ -228,14 +885,37 @@ const steps = [
     preview: {
       type: "xml",
       fileList: [
-        "cesop_2025_Q4_DK_MLIFDKV9.xml",
-        "cesop_2025_Q4_SE_MLIFDKV9.xml",
-        "cesop_2025_Q4_DE_MLIFDKV9.xml",
-        "cesop_2025_Q4_FR_MLIFDKV9.xml",
-        "cesop_2025_Q4_IE_MLIFDKV9.xml",
-        "cesop_2025_Q4_NL_MLIFDKV9.xml",
+        "cesop_2025_Q4_AT_AFBQBGKT.xml",
+        "cesop_2025_Q4_BG_AFBQBGKT.xml",
+        "cesop_2025_Q4_CZ_AFBQBGKT.xml",
+        "cesop_2025_Q4_DK_AFBQBGKT.xml",
+        "cesop_2025_Q4_ES_AFBQBGKT.xml",
+        "cesop_2025_Q4_FI_AFBQBGKT.xml",
       ],
-      value: `<?xml version="1.0" encoding="UTF-8"?>\n<CESOP xmlns="urn:ec.europa.eu:taxud:fiscalis:cesop:v1" xmlns:cm="urn:eu:taxud:commontypes:v1" xmlns:iso="urn:eu:taxud:isotypes:v1" version="4.03">\n  <MessageSpec>\n    <TransmittingCountry>DK</TransmittingCountry>\n    <MessageType>PMT</MessageType>\n    <MessageTypeIndic>CESOP100</MessageTypeIndic>\n    <MessageRefId>67f2a1c9-3ab9-4f2c-9f1b-1d4a8bcd27e6</MessageRefId>\n    <ReportingPeriod>\n      <Quarter>4</Quarter>\n      <Year>2025</Year>\n    </ReportingPeriod>\n    <Timestamp>2025-12-31T23:59:59Z</Timestamp>\n  </MessageSpec>\n  <PaymentDataBody>\n    <ReportingPSP>\n      <PSPId PSPIdType="BIC">MLIFDKV9</PSPId>\n      <Name nameType="BUSINESS">Northshore Payments</Name>\n    </ReportingPSP>\n    <ReportedPayee>\n      <Name nameType="BUSINESS">Silver Trading BV</Name>\n      <Country>DK</Country>\n      <Address>\n        <cm:CountryCode>DK</cm:CountryCode>\n        <cm:AddressFree>Market St 12, 2100 Copenhagen</cm:AddressFree>\n      </Address>\n      <TAXIdentification/>\n      <AccountIdentifier CountryCode="DK" type="IBAN">DK5000400440116243</AccountIdentifier>\n      <ReportedTransaction>\n        <TransactionIdentifier>PAY-00412-01</TransactionIdentifier>\n        <DateTime transactionDateType="CESOP701">2025-10-04T10:04:22Z</DateTime>\n        <Amount currency="EUR">159.98</Amount>\n        <PaymentMethod>\n          <cm:PaymentMethodType>Card payment</cm:PaymentMethodType>\n        </PaymentMethod>\n        <InitiatedAtPhysicalPremisesOfMerchant>true</InitiatedAtPhysicalPremisesOfMerchant>\n        <PayerMS PayerMSSource="IBAN">SE</PayerMS>\n      </ReportedTransaction>\n      <DocSpec>\n        <cm:DocTypeIndic>CESOP1</cm:DocTypeIndic>\n        <cm:DocRefId>9e0d9d12-5e76-4f1a-92d7-3f2e5a4c8d3f</cm:DocRefId>\n      </DocSpec>\n    </ReportedPayee>\n  </PaymentDataBody>\n</CESOP>`,
+      value: `<CESOP xmlns="urn:ec.europa.eu:taxud:fiscalis:cesop:v1" xmlns:cm="urn:eu:taxud:commontypes:v1" xmlns:iso="urn:eu:taxud:isotypes:v1" version="4.03">
+  <MessageSpec>
+    <TransmittingCountry>AT</TransmittingCountry>
+    <MessageType>PMT</MessageType>
+    <MessageTypeIndic>CESOP100</MessageTypeIndic>
+    <MessageRefId>7ef69a98-3176-4242-b7cc-68f513e2f147</MessageRefId>
+    <ReportingPeriod>
+      <Quarter>4</Quarter>
+      <Year>2025</Year>
+    </ReportingPeriod>
+    <Timestamp>2025-12-29T17:36:50.590Z</Timestamp>
+  </MessageSpec>
+  <PaymentDataBody>
+    <ReportingPSP>
+      <PSPId PSPIdType="BIC">AFBQBGKT</PSPId>
+      <Name nameType="BUSINESS">BlueBridge PSP</Name>
+    </ReportingPSP>
+    <ReportedPayee>
+      <Name nameType="BUSINESS">Malaya Collective NV</Name>
+      <Country>AT</Country>`,
+    },
+    animation: {
+      onEnter: 'typewriterXml', // XML loads in line by line with typewriter effect
+      onExit: 'scrollOut',
     },
     rule: {
       title: "Schema compliance",
@@ -261,7 +941,11 @@ const steps = [
     preview: {
       type: "text",
       value:
-        "Validation: PASS\nSchema checks: 134\nBusiness rules: 27\nWarnings: 2 (precision normalized)\nValidated files: 6\nErrors: 0\nOutput: validation.xml\nDuration: 1.6s",
+        "Starting validation of folder: \"/cesop/data/output\"\n> Checking schema compliance...\n> Validating business rules...\n> Verifying cross-field consistency...\nGenerated CSV output: /cesop/data/output/validation_output.csv\nValidation successfully finished.\n\nResult: PASS (100%)",
+    },
+    animation: {
+      onEnter: 'staggerLines', // Validation output appears line by line
+      onExit: 'scrollOut',
     },
     rule: {
       title: "Official validation",
@@ -287,7 +971,11 @@ const steps = [
     preview: {
       type: "text",
       value:
-        "Pipeline complete\nDeliverables:\n  - 6 validated XML files\n  - Correction audit log\n  - Validation reports\nReady for CESOP portal submission",
+        "Pipeline complete\n\nDeliverables:\n  - {reports} validated XML files\n  - Correction audit log\n  - Validation reports\n\nReady for CESOP portal submission",
+    },
+    animation: {
+      onEnter: 'staggerLines',
+      onExit: null,
     },
     rule: {
       title: "Production ready",
@@ -308,6 +996,7 @@ const steps = [
   },
 ];
 
+const stepIndexMap = new Map(steps.map((step, index) => [step.id, index]));
 const numberFormat = new Intl.NumberFormat("en-US");
 const csvPalette = [
   "csv-col-0",
@@ -333,13 +1022,25 @@ const flowStageMap = {
 };
 
 let activeStepId = steps[0].id;
+let previousStepId = null;
 let scrollTicking = false;
+let isAnimating = false;
+let lastStepChangeAt = 0;
+let stepChangeToken = 0;
 
 const stepElements = Array.from(document.querySelectorAll(".step"));
 const timelineItems = Array.from(document.querySelectorAll(".timeline-item"));
 const previewTitle = document.getElementById("previewTitle");
 const previewMeta = document.getElementById("previewMeta");
 const previewCode = document.getElementById("previewCode");
+const previewContent = previewCode
+  ? (previewCode.querySelector(".preview-content") || (() => {
+    const content = document.createElement("span");
+    content.className = "preview-content";
+    previewCode.appendChild(content);
+    return content;
+  })())
+  : null;
 const previewMetrics = document.getElementById("previewMetrics");
 const ruleTitle = document.getElementById("ruleTitle");
 const ruleBody = document.getElementById("ruleBody");
@@ -512,39 +1213,66 @@ function renderCsvSnippet(preview) {
   const rows = Array.isArray(preview.rows) ? preview.rows : [];
   const highlights = Array.isArray(preview.highlights) ? preview.highlights : [];
 
-  const markMap = new Set();
+  // Build a map of highlighted cells with their tooltip keys and excluded status
+  const markMap = new Map();
+  const excludedRows = new Set();
   const headerOffset = header.length > 0 ? 1 : 0;
   const maxRows = Math.max(0, MAX_PREVIEW_LINES - headerOffset);
   const visibleRows = rows.slice(0, maxRows);
+
   highlights.forEach((highlight) => {
     if (!highlight || !Array.isArray(highlight.cols)) {
       return;
     }
     const rowIndex = (highlight.row || 0) + headerOffset;
     highlight.cols.forEach((col) => {
-      markMap.add(`${rowIndex}:${col}`);
+      markMap.set(`${rowIndex}:${col}`, {
+        tooltip: highlight.tooltip || null,
+        excluded: highlight.excluded || false,
+      });
     });
+    if (highlight.excluded) {
+      excludedRows.add(rowIndex);
+    }
   });
 
   const allRows = header.length > 0 ? [header, ...visibleRows] : visibleRows;
   const lines = allRows.map((row, rowIndex) => {
-    return row
-      .map((value, colIndex) => {
-        const classes = ["csv-cell", csvPalette[colIndex % csvPalette.length]];
-        if (rowIndex === 0 && header.length > 0) {
-          classes.push("csv-header");
+    const isExcludedRow = excludedRows.has(rowIndex);
+    // Data attributes for animation targeting
+    const rowAttrs = isExcludedRow
+      ? `class="csv-row" data-excluded="true" data-row="${rowIndex}"`
+      : `class="csv-row" data-row="${rowIndex}"`;
+
+    const cells = row.map((value, colIndex) => {
+      const classes = ["csv-cell", csvPalette[colIndex % csvPalette.length]];
+      if (rowIndex === 0 && header.length > 0) {
+        classes.push("csv-header");
+      }
+
+      const markInfo = markMap.get(`${rowIndex}:${colIndex}`);
+      let tooltipAttr = '';
+      if (markInfo) {
+        classes.push("csv-mark");
+        if (markInfo.excluded) {
+          classes.push("csv-mark-excluded");
         }
-        if (markMap.has(`${rowIndex}:${colIndex}`)) {
-          classes.push("csv-mark");
+        if (markInfo.tooltip) {
+          tooltipAttr = ` data-tooltip="${markInfo.tooltip}"`;
+          classes.push("has-tooltip");
         }
-        const text = escapeHtml(value ?? "");
-        const suffix = colIndex < row.length - 1 ? "," : "";
-        return `<span class="${classes.join(" ")}">${text}${suffix}</span>`;
-      })
-      .join("");
+      }
+
+      const text = escapeHtml(value ?? "");
+      const suffix = colIndex < row.length - 1 ? "," : "";
+      return `<span class="${classes.join(" ")}"${tooltipAttr}>${text}${suffix}</span>`;
+    }).join("");
+
+    return `<span ${rowAttrs}>${cells}</span>`;
   });
 
-  return clampPreviewLines(lines).join("\n");
+  // Join without newlines since css-row has display:block
+  return clampPreviewLines(lines).join("");
 }
 
 function renderDiffSnippet(preview) {
@@ -553,32 +1281,39 @@ function renderDiffSnippet(preview) {
   }
 
   const lines = [];
-  if (preview.recordId) {
-    lines.push(`<span class="diff-header">${escapeHtml(preview.recordId)}</span>`);
-  }
+
+  // Always show header
+  const headerText = preview.recordId || "Correction Summary";
+  lines.push(`<span class="diff-header">${escapeHtml(headerText)}</span>`);
 
   let shown = 0;
   for (const change of preview.changes) {
-    if (lines.length + 2 > MAX_PREVIEW_LINES) {
+    // Check if we have room for this change (2 lines for before/after, optionally 1 for rule)
+    const linesNeeded = change.rule ? 3 : 2;
+    if (lines.length + linesNeeded > MAX_PREVIEW_LINES) {
       break;
     }
-    lines.push(
-      `<span class="remove">- ${escapeHtml(change.field)}: ${escapeHtml(change.before)}</span>`
-    );
-    lines.push(
-      `<span class="add">+ ${escapeHtml(change.field)}: ${escapeHtml(change.after)}</span>`
-    );
+
+    // Each diff change is a self-contained block
+    const beforeLine = `<span class="diff-line diff-remove">- ${escapeHtml(change.field)}: ${escapeHtml(change.before)}</span>`;
+    const afterLine = `<span class="diff-line diff-add">+ ${escapeHtml(change.field)}: ${escapeHtml(change.after)}</span>`;
+
+    lines.push(beforeLine);
+    lines.push(afterLine);
+
+    if (change.rule && lines.length < MAX_PREVIEW_LINES) {
+      lines.push(`<span class="diff-line diff-rule">  ↳ ${escapeHtml(change.rule)}</span>`);
+    }
     shown += 1;
   }
 
-  if (lines.length < MAX_PREVIEW_LINES) {
-    const summary = `Showing ${shown} of ${preview.changes.length} fixes`;
-    if (lines.length + 1 <= MAX_PREVIEW_LINES) {
-      lines.push(`<span class="diff-header">${escapeHtml(summary)}</span>`);
-    }
+  // Show summary at the bottom if there are more changes
+  if (preview.changes.length > shown && lines.length < MAX_PREVIEW_LINES) {
+    const remaining = preview.changes.length - shown;
+    lines.push(`<span class="diff-line diff-more">...and ${remaining} more correction${remaining > 1 ? 's' : ''}</span>`);
   }
 
-  return lines.slice(0, MAX_PREVIEW_LINES).join("\n");
+  return lines.slice(0, MAX_PREVIEW_LINES).join("");
 }
 
 function renderXmlSnippet(preview) {
@@ -627,27 +1362,57 @@ function renderXmlSnippet(preview) {
   return lines.slice(0, MAX_PREVIEW_LINES).join("\n");
 }
 
-function setPreview(step) {
-  previewTitle.textContent = step.title;
-  previewMeta.textContent = fillTemplate(step.meta);
+// Store current metric values for animation comparison
+let currentMetricValues = {};
 
-  previewCode.classList.toggle("csv-snippet", step.preview.type === "csv");
-  previewCode.classList.toggle("diff-snippet", step.preview.type === "diff");
+function animateMetricsUpdate(newMetrics) {
+  const existingMetrics = previewMetrics.querySelectorAll('.metric');
+  const newValues = {};
 
-  if (step.preview.type === "csv") {
-    previewCode.innerHTML = renderCsvSnippet(step.preview);
-  } else if (step.preview.type === "xml") {
-    previewCode.textContent = renderXmlSnippet(step.preview);
-  } else if (step.preview.type === "diff") {
-    previewCode.innerHTML = renderDiffSnippet(step.preview);
-  } else if (step.preview.type === "html") {
-    previewCode.innerHTML = step.preview.value;
-  } else {
-    previewCode.textContent = clampPreviewText(step.preview.value);
+  // Build map of new values
+  newMetrics.forEach(metric => {
+    newValues[metric.label] = fillTemplate(metric.value);
+  });
+
+  // Check if we need to animate (values changed)
+  let hasChanges = existingMetrics.length !== newMetrics.length;
+  if (!hasChanges) {
+    newMetrics.forEach(metric => {
+      if (currentMetricValues[metric.label] !== newValues[metric.label]) {
+        hasChanges = true;
+      }
+    });
   }
 
+  if (hasChanges && existingMetrics.length > 0) {
+    // Delay the metric animation by 500ms to let other animations settle
+    setTimeout(() => {
+      // Animate out existing values
+      const currentMetrics = previewMetrics.querySelectorAll('.metric');
+      currentMetrics.forEach((metricEl, index) => {
+        const valueEl = metricEl.querySelector('.value');
+        if (valueEl) {
+          valueEl.style.setProperty('--metric-delay', `${index * 50}ms`);
+          valueEl.classList.add('metric-value-exit');
+        }
+      });
+
+      // After exit animation, update and animate in
+      setTimeout(() => {
+        renderMetrics(newMetrics, true);
+        currentMetricValues = newValues;
+      }, 150);
+    }, 500);
+  } else {
+    // No animation needed, just render
+    renderMetrics(newMetrics, false);
+    currentMetricValues = newValues;
+  }
+}
+
+function renderMetrics(metrics, animate) {
   previewMetrics.innerHTML = "";
-  step.metrics.forEach((metric) => {
+  metrics.forEach((metric, index) => {
     const metricEl = document.createElement("div");
     metricEl.className = "metric";
 
@@ -657,12 +1422,62 @@ function setPreview(step) {
 
     const value = document.createElement("div");
     value.className = "value";
+    if (animate) {
+      value.style.setProperty('--metric-delay', `${index * 50}ms`);
+      value.classList.add('metric-value-enter');
+    }
     value.textContent = fillTemplate(metric.value);
 
     metricEl.appendChild(label);
     metricEl.appendChild(value);
     previewMetrics.appendChild(metricEl);
   });
+}
+
+function setPreview(step, animate = false) {
+  previewTitle.textContent = step.title;
+  previewMeta.textContent = fillTemplate(step.meta);
+
+  previewCode.classList.toggle("csv-snippet", step.preview.type === "csv");
+  previewCode.classList.toggle("diff-snippet", step.preview.type === "diff");
+
+  const previewTarget = previewContent || previewCode;
+
+  // Clear all animation classes to prevent ghost content
+  previewTarget.classList.remove(
+    'anim-stagger-container',
+    'anim-typewriter-container',
+    'anim-scroll-out',
+    'anim-scroll-up',
+    'anim-scroll-down',
+    'anim-scroll-in',
+    'anim-from-below',
+    'anim-from-above',
+    'anim-scroll-in-active',
+    'anim-fade-out',
+    'anim-fade-in'
+  );
+  previewTarget.style.transition = '';
+  previewTarget.style.transform = '';
+  previewTarget.style.opacity = '';
+
+  // Reset scroll position
+  previewCode.scrollLeft = 0;
+
+  if (step.preview.type === "csv") {
+    previewTarget.innerHTML = renderCsvSnippet(step.preview);
+  } else if (step.preview.type === "xml") {
+    previewTarget.textContent = renderXmlSnippet(step.preview);
+  } else if (step.preview.type === "diff") {
+    previewTarget.innerHTML = renderDiffSnippet(step.preview);
+  } else if (step.preview.type === "html") {
+    previewTarget.innerHTML = step.preview.value;
+  } else {
+    previewTarget.textContent = fillTemplate(clampPreviewText(step.preview.value));
+  }
+
+  // Animate metrics transition
+  animateMetricsUpdate(step.metrics);
 
   ruleTitle.textContent = step.rule.title;
   ruleBody.textContent = step.rule.body;
@@ -676,13 +1491,245 @@ function setPreview(step) {
   requestAnimationFrame(updatePreviewOffset);
 }
 
+function resolveErrorScrollCols(step, previewEl) {
+  if (step && step.preview && Array.isArray(step.preview.highlights)) {
+    const highlight = step.preview.highlights.find(
+      (item) => item && Array.isArray(item.cols) && item.cols.length > 0
+    );
+    if (highlight) {
+      return highlight.cols;
+    }
+  }
+
+  if (previewEl) {
+    const mark = previewEl.querySelector('.csv-row .csv-mark');
+    if (mark) {
+      const row = mark.closest('.csv-row');
+      if (row) {
+        const cells = Array.from(row.querySelectorAll('.csv-cell'));
+        const idx = cells.indexOf(mark);
+        if (idx >= 0) {
+          return [idx];
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function applyStepFocus(step) {
+  if (!step || !step.animation || !previewCode) {
+    return;
+  }
+
+  switch (step.animation.onEnter) {
+    case 'crossBorderFilter':
+    case 'scrollToCountries': {
+      PreviewAnimations.jumpToColumns(previewCode, [4, 6]);
+      const excludedRows = previewCode.querySelectorAll('.csv-row[data-excluded="true"]');
+      excludedRows.forEach((row) => row.classList.add('csv-row-highlight-excluded'));
+      break;
+    }
+    case 'errorDetection':
+      {
+        const cols = resolveErrorScrollCols(step, previewCode);
+        if (cols) {
+          PreviewAnimations.jumpToColumns(previewCode, cols);
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+function shouldSkipExit(prevStepId, nextStepId) {
+  if (!prevStepId || !nextStepId) {
+    return false;
+  }
+  if (prevStepId === nextStepId) {
+    return true;
+  }
+  const sharePreview = (prevStepId === "raw" && nextStepId === "cross-border")
+    || (prevStepId === "cross-border" && nextStepId === "raw");
+  return sharePreview;
+}
+
+function shouldForceEnter(step, isRapid) {
+  if (!step || !step.animation || !step.animation.onEnter) {
+    return false;
+  }
+  if (!isRapid) {
+    return false;
+  }
+  return step.id === "errors";
+}
+
+// Animation runner - executes animations based on step config
+async function runStepAnimation(step, animationType, fromStep = null) {
+  if (!step || !step.animation) return;
+
+  const animName = step.animation[animationType];
+  if (!animName) return;
+
+  const ctx = PreviewAnimations.createContext();
+  const contentEl = previewContent || previewCode;
+
+  switch (animName) {
+    case 'scrollToCountries':
+      // Scroll horizontally to highlight country columns (4 and 6)
+      await PreviewAnimations.horizontalScrollToColumns(previewCode, [4, 6], ctx);
+      break;
+
+    case 'crossBorderFilter':
+      // Full cross-border filter animation sequence
+      await PreviewAnimations.crossBorderFilterSequence(previewCode, ctx);
+      break;
+
+    case 'highlightCountries':
+      // Flash highlight on marked cells
+      await PreviewAnimations.flashHighlight(previewCode, '.csv-mark', ctx);
+      break;
+
+    case 'scrollOutExcluded':
+      // Scroll excluded rows out
+      await PreviewAnimations.scrollLinesOut(contentEl, 'up', ctx);
+      break;
+
+    case 'staggerLines': {
+      // Show lines appearing one by one
+      const content = step.preview.type === 'text'
+        ? fillTemplate(clampPreviewText(step.preview.value))
+        : contentEl.textContent;
+      await PreviewAnimations.staggeredLinesIn(contentEl, content, ctx, {
+        delay: PreviewAnimations.config.lineDelay,
+        preserveFormatting: false,
+      });
+      break;
+    }
+
+    case 'scrollInFromBelow':
+      // Scroll content in from below
+      await PreviewAnimations.scrollLinesIn(contentEl, 'below', ctx);
+      break;
+
+    case 'errorDetection':
+      // Error detection: phase 1 = fade/slide in, phase 2 = scroll + highlight
+      await PreviewAnimations.scrollLinesIn(contentEl, 'below', ctx, 520);
+      if (ctx.cancelled) return;
+      await PreviewAnimations.sleep(180, ctx);
+      if (ctx.cancelled) return;
+      // Scroll to the first highlighted error column, then flash highlights
+      {
+        const cols = resolveErrorScrollCols(step, previewCode);
+        if (cols) {
+          await PreviewAnimations.horizontalScrollToColumns(previewCode, cols, ctx);
+        }
+      }
+      if (ctx.cancelled) return;
+      await PreviewAnimations.flashHighlight(previewCode, '.csv-mark', ctx);
+      break;
+
+    case 'staggerDiff': {
+      // Show diff lines appearing one by one with stagger
+      const diffContent = renderDiffSnippet(step.preview);
+      await PreviewAnimations.staggeredLinesIn(contentEl, diffContent, ctx, {
+        delay: 300,
+        preserveFormatting: true,
+      });
+      break;
+    }
+
+    case 'typewriterXml': {
+      // XML loads line by line with typewriter effect
+      const xmlContent = renderXmlSnippet(step.preview);
+      await PreviewAnimations.staggeredLinesIn(contentEl, xmlContent, ctx, {
+        delay: 150,
+        preserveFormatting: false,
+      });
+      break;
+    }
+
+    case 'scrollOut':
+      await PreviewAnimations.scrollLinesOut(contentEl, 'up', ctx);
+      break;
+
+    default:
+      break;
+  }
+}
+
 function setActiveStep(id) {
   const step = steps.find((item) => item.id === id);
   if (!step) {
     return;
   }
+
+  const prevStepId = activeStepId;
+  const isNewStep = prevStepId !== id;
+  const transitionToken = isNewStep ? ++stepChangeToken : stepChangeToken;
+  const prevStep = steps.find((item) => item.id === prevStepId);
+  const prevIndex = stepIndexMap.get(prevStepId);
+  const nextIndex = stepIndexMap.get(id);
+  const isJump = prevIndex !== undefined && nextIndex !== undefined && Math.abs(nextIndex - prevIndex) > 1;
+  previousStepId = prevStepId;
   activeStepId = id;
-  setPreview(step);
+
+  const now = performance.now();
+  const isRapid = isNewStep && (now - lastStepChangeAt < 400 || isJump);
+  if (isNewStep) {
+    lastStepChangeAt = now;
+  }
+
+  // Cancel any running animations when switching steps
+  PreviewAnimations.cancelAnimation();
+  if (isAnimating) {
+    isAnimating = false;
+  }
+
+  // Check if we need to run exit animation from previous step
+  const canAnimate = isNewStep && !isRapid;
+  const skipExit = shouldSkipExit(prevStepId, id);
+  const needsExitAnim = canAnimate && !skipExit && prevStep && prevStep.animation && prevStep.animation.onExit;
+  const forceEnter = shouldForceEnter(step, isRapid);
+
+  if (needsExitAnim) {
+    isAnimating = true;
+
+    // Run exit animation on current content, then transition
+    runStepAnimation(prevStep, 'onExit').then(() => {
+      if (transitionToken !== stepChangeToken) {
+        return;
+      }
+      // Now set new content and run enter animation
+      setPreview(step, false);
+
+      if (step.animation && step.animation.onEnter) {
+        return runStepAnimation(step, 'onEnter');
+      }
+    }).finally(() => {
+      if (transitionToken === stepChangeToken) {
+        isAnimating = false;
+      }
+    });
+  } else if ((canAnimate || forceEnter) && step.animation && step.animation.onEnter) {
+    isAnimating = true;
+
+    // Set content first, then animate
+    setPreview(step, false);
+
+    // Run enter animation asynchronously
+    runStepAnimation(step, 'onEnter').finally(() => {
+      if (transitionToken === stepChangeToken) {
+        isAnimating = false;
+      }
+    });
+  } else {
+    setPreview(step, false);
+    applyStepFocus(step);
+  }
+
   setFlowStage(id);
 
   const timelineId = id === "outro" ? "validation" : id;
@@ -1023,3 +2070,7 @@ if (toggleCesopInfo) {
 if (closeCesopInfo) {
   closeCesopInfo.addEventListener("click", toggleCesopPanel);
 }
+
+// Initialize tooltips on the preview code element
+Tooltips.init();
+Tooltips.attachToPreview(previewCode);

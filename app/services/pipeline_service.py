@@ -524,11 +524,14 @@ def run_pipeline(scale: int) -> dict:
     column_index = build_column_index(header)
     payee_id_idx = column_index.get("payee_id")
     payer_country_idx = column_index.get("payer_country")
+    payer_ms_source_idx = column_index.get("payer_ms_source")
     payee_country_idx = column_index.get("payee_country")
+    payee_name_idx = column_index.get("payee_name")
     payee_account_idx = column_index.get("payee_account")
     payee_account_type_idx = column_index.get("payee_account_type")
     payee_psp_id_idx = column_index.get("payee_psp_id")
     psp_role_idx = column_index.get("psp_role")
+    currency_idx = column_index.get("currency")
 
     payee_countries = [
         resolve_payee_country(row, payee_account_idx, payee_account_type_idx, payee_psp_id_idx)
@@ -640,19 +643,55 @@ def run_pipeline(scale: int) -> dict:
         else diff_cells or diff_row_count
     )
 
-    raw_rows = clean_rows[:7]
+    max_preview_lines = 8
+    max_csv_rows = max_preview_lines - 1
 
-    cross_border_rows: list[list[str]] = []
+    # Build a consistent set of rows for raw ingest and cross-border filter
+    # Mix cross-border and non-cross-border so we can demonstrate filtering
+    preview_row_indices: list[int] = []
+    preview_non_cb_positions: list[int] = []  # Track which positions are non-cross-border
+
+    # Add first few cross-border transactions
+    cb_added = 0
+    for idx in cross_border_indices:
+        if len(preview_row_indices) >= max_csv_rows:
+            break
+        # Leave room for non-cross-border transactions at positions 1 and 3
+        if len(preview_row_indices) == 1 and non_cross_border_indices:
+            # Insert first non-cross-border at position 1
+            preview_non_cb_positions.append(len(preview_row_indices))
+            preview_row_indices.append(non_cross_border_indices[0])
+        elif len(preview_row_indices) == 3 and len(non_cross_border_indices) > 1:
+            # Insert second non-cross-border at position 3
+            preview_non_cb_positions.append(len(preview_row_indices))
+            preview_row_indices.append(non_cross_border_indices[1])
+        if len(preview_row_indices) >= max_csv_rows:
+            break
+        preview_row_indices.append(idx)
+        cb_added += 1
+
+    # If we didn't fill up, add more non-cross-border at the end
+    if len(preview_row_indices) < max_csv_rows and len(non_cross_border_indices) > 2:
+        for idx in non_cross_border_indices[2:]:
+            if len(preview_row_indices) >= max_csv_rows:
+                break
+            preview_non_cb_positions.append(len(preview_row_indices))
+            preview_row_indices.append(idx)
+
+    # Build the actual rows
+    raw_rows = [clean_rows[idx] for idx in preview_row_indices if idx < len(clean_rows)]
+    cross_border_rows = raw_rows  # Same rows for both steps
+
+    # Build highlights for the non-cross-border transactions with tooltips
     cross_border_highlights: list[dict] = []
-    if cross_border_indices:
-        cross_border_rows.append(clean_rows[cross_border_indices[0]])
-    if non_cross_border_indices:
-        cross_border_rows.append(clean_rows[non_cross_border_indices[0]])
-        if payer_country_idx is not None and payee_country_idx is not None:
+    if payer_country_idx is not None and payee_country_idx is not None:
+        for pos in preview_non_cb_positions:
             cross_border_highlights.append(
                 {
-                    "row": len(cross_border_rows) - 1,
+                    "row": pos,
                     "cols": [payer_country_idx, payee_country_idx],
+                    "tooltip": "cross-border-same",
+                    "excluded": True,
                 }
             )
 
@@ -663,7 +702,7 @@ def run_pipeline(scale: int) -> dict:
             key=lambda item: item[1],
             reverse=True,
         )
-        for (payee_id, payee_country), count in ranked[:4]:
+        for (payee_id, payee_country), count in ranked[:max_preview_lines]:
             label = payee_id or "Unknown payee"
             country = payee_country or "--"
             threshold_summary_lines.append(f"{label} ({country}) -> {count} payments")
@@ -674,19 +713,169 @@ def run_pipeline(scale: int) -> dict:
     error_highlights: list[dict] = []
     corrected_changes: list[dict] = []
     record_id = None
-    if first_diff:
-        diff_index, diff_cols, corrupted_row, corrected_row = first_diff
-        error_rows.append(corrupted_row)
-        for idx in reportable_indices:
-            if idx != diff_index:
-                error_rows.append(corrupt_rows[idx])
-                break
-        error_highlights.append({"row": 0, "cols": diff_cols})
 
+    def resolve_error_tooltip(col: int, row: list[str]) -> str | None:
+        value = safe_get(row, col).strip()
+        if payee_name_idx is not None and col == payee_name_idx and not value:
+            return "error-missing-payee-name"
+        if payee_country_idx is not None and col == payee_country_idx and value == "ZZ":
+            return "error-invalid-country"
+        if payer_country_idx is not None and col == payer_country_idx and value == "ZZ":
+            return "error-invalid-country"
+        if currency_idx is not None and col == currency_idx and value == "EURO":
+            return "error-invalid-currency"
+        if payee_account_type_idx is not None and col == payee_account_type_idx and value == "BADTYPE":
+            return "error-invalid-account-type"
+        if payee_account_idx is not None and col == payee_account_idx and value.startswith("ZZ00"):
+            return "error-invalid-account"
+        if payer_ms_source_idx is not None and col == payer_ms_source_idx and value == "BAD":
+            return "error-invalid-payer-source"
+        return None
+
+    error_cols = [
+        payee_name_idx,
+        payee_country_idx,
+        payer_country_idx,
+        currency_idx,
+        payee_account_type_idx,
+        payee_account_idx,
+        payer_ms_source_idx,
+    ]
+    error_cols = [col for col in error_cols if col is not None]
+
+    def row_error_highlights(row: list[str], row_idx: int) -> list[dict]:
+        highlights: list[dict] = []
+        for col in error_cols:
+            tooltip = resolve_error_tooltip(col, row)
+            if tooltip:
+                highlights.append({"row": row_idx, "cols": [col], "tooltip": tooltip})
+        return highlights
+
+    tooltip_priority = [
+        "error-missing-payee-name",
+        "error-invalid-country",
+        "error-invalid-currency",
+        "error-invalid-account-type",
+        "error-invalid-account",
+        "error-invalid-payer-source",
+    ]
+
+    def collect_error_rows(indices: list[int]) -> tuple[list[list[str]], list[dict], list[int]]:
+        candidates: list[tuple[int, list[str], list[str]]] = []
+        tooltip_to_candidate: dict[str, tuple[int, list[str], list[str]]] = {}
+
+        for idx in indices:
+            if idx >= len(corrupt_rows):
+                continue
+            row = corrupt_rows[idx]
+            tooltips = [
+                tooltip
+                for col in error_cols
+                if (tooltip := resolve_error_tooltip(col, row))
+            ]
+            if not tooltips:
+                continue
+            candidates.append((idx, row, tooltips))
+            for tooltip in tooltips:
+                if tooltip not in tooltip_to_candidate:
+                    tooltip_to_candidate[tooltip] = (idx, row, tooltips)
+
+        rows: list[list[str]] = []
+        highlights: list[dict] = []
+        selected: list[int] = []
+        used_indices: set[int] = set()
+
+        for tooltip in tooltip_priority:
+            if len(rows) >= max_csv_rows:
+                break
+            candidate = tooltip_to_candidate.get(tooltip)
+            if not candidate:
+                continue
+            idx, row, _tooltips = candidate
+            if idx in used_indices:
+                continue
+            used_indices.add(idx)
+            rows.append(row)
+            selected.append(idx)
+
+        for idx, row, _tooltips in candidates:
+            if len(rows) >= max_csv_rows:
+                break
+            if idx in used_indices:
+                continue
+            used_indices.add(idx)
+            rows.append(row)
+            selected.append(idx)
+
+        for row_idx, row in enumerate(rows):
+            highlights.extend(row_error_highlights(row, row_idx))
+
+        return rows, highlights, selected
+
+    error_rows, error_highlights, error_indices = collect_error_rows(reportable_indices)
+    if not error_rows:
+        error_rows, error_highlights, error_indices = collect_error_rows(cross_border_indices)
+    if not error_rows:
+        error_rows, error_highlights, error_indices = collect_error_rows(
+            list(range(len(corrupt_rows)))
+        )
+
+    # Collect all corrections for the correction slide
+    all_corrections: list[dict] = []
+    correction_indices = error_indices or reportable_indices
+
+    def correction_rule_for_field(field: str) -> str:
+        if field in {"payer_country", "payee_country"}:
+            return "Derived location fix"
+        if field == "currency":
+            return "ISO 4217 normalize"
+        if field == "payee_account":
+            return "Account identifier fix"
+        if field == "payee_account_type":
+            return "Account type fix"
+        if field == "payer_ms_source":
+            return "Identifier source fix"
+        if field == "payee_name":
+            return "Missing->placeholder"
+        return "Data correction"
+
+    for idx in correction_indices:
+        if idx >= len(corrupt_rows) or idx >= len(corrected_rows):
+            continue
+        corrupted_row = corrupt_rows[idx]
+        corrected_row = corrected_rows[idx]
+        max_len = max(len(corrupted_row), len(corrected_row))
+        diff_cols = []
+        for col in range(max_len):
+            before_val = corrupted_row[col] if col < len(corrupted_row) else ""
+            after_val = corrected_row[col] if col < len(corrected_row) else ""
+            if before_val != after_val:
+                diff_cols.append(col)
+                field = header[col] if col < len(header) else f"col_{col}"
+                all_corrections.append({
+                    "field": field,
+                    "before": before_val,
+                    "after": after_val,
+                    "rule": correction_rule_for_field(field),
+                })
+        if record_id is None and diff_cols:
+            payment_idx = header.index("payment_id") if "payment_id" in header else None
+            payee_idx = header.index("payee_id") if "payee_id" in header else None
+            record_id = safe_get(corrected_row, payment_idx) or safe_get(corrected_row, payee_idx)
+        if len(all_corrections) >= 5:
+            break
+
+    if record_id is None and first_diff:
+        _, diff_cols, corrupted_row, corrected_row = first_diff
         payment_idx = header.index("payment_id") if "payment_id" in header else None
         payee_idx = header.index("payee_id") if "payee_id" in header else None
         record_id = safe_get(corrected_row, payment_idx) or safe_get(corrected_row, payee_idx)
 
+    # Use all_corrections if available, otherwise fall back to first_diff
+    if all_corrections:
+        corrected_changes = all_corrections[:5]
+    elif first_diff:
+        _, diff_cols, corrupted_row, corrected_row = first_diff
         for col in diff_cols[:4]:
             field = header[col] if col < len(header) else f"col_{col}"
             corrected_changes.append(
@@ -694,6 +883,7 @@ def run_pipeline(scale: int) -> dict:
                     "field": field,
                     "before": safe_get(corrupted_row, col),
                     "after": safe_get(corrected_row, col),
+                    "rule": correction_rule_for_field(field),
                 }
             )
 
@@ -744,7 +934,11 @@ def run_pipeline(scale: int) -> dict:
             },
             "threshold": {"summary": "\n".join(threshold_summary_lines)},
             "error": {"header": header, "rows": error_rows, "highlights": error_highlights},
-            "corrected": {"recordId": record_id, "changes": corrected_changes},
+            "corrected": {
+                "recordId": record_id,
+                "changes": corrected_changes,
+                "compact": True,
+            },
             "xml": xml_snippet,
         },
     }

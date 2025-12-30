@@ -708,6 +708,16 @@ progress::-moz-progress-bar {
   );
   width: 100%;
   max-width: 100%;
+  /* Ensure content is clipped to prevent ghost lines */
+  clip-path: inset(0);
+}
+
+.preview-panel pre .preview-content {
+  display: inline-block;
+  min-width: 100%;
+  white-space: inherit;
+  font: inherit;
+  line-height: inherit;
 }
 
 .preview-panel pre .mark {
@@ -811,6 +821,40 @@ progress::-moz-progress-bar {
 .metric .value {
   font-size: 0.95rem;
   font-weight: 600;
+  overflow: hidden;
+}
+
+/* Metric value scroll animations */
+.metric-value-exit {
+  animation: metric-scroll-out 0.15s ease forwards;
+  animation-delay: var(--metric-delay, 0ms);
+}
+
+.metric-value-enter {
+  animation: metric-scroll-in 0.2s ease forwards;
+  animation-delay: var(--metric-delay, 0ms);
+}
+
+@keyframes metric-scroll-out {
+  from {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+}
+
+@keyframes metric-scroll-in {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
 .rule-panel ul {
@@ -1005,4 +1049,386 @@ progress::-moz-progress-bar {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* =============================================================================
+   PREVIEW ANIMATIONS
+   ============================================================================= */
+
+/* Scroll out animation */
+.anim-scroll-out {
+  transition: transform 0.4s ease, opacity 0.4s ease;
+}
+
+.anim-scroll-out.anim-scroll-up {
+  transform: translateY(-20px);
+  opacity: 0;
+}
+
+.anim-scroll-out.anim-scroll-down {
+  transform: translateY(20px);
+  opacity: 0;
+}
+
+/* Scroll in animation */
+.anim-scroll-in {
+  opacity: 0;
+  transition: transform var(--scroll-in-duration, 0.3s) ease, opacity var(--scroll-in-duration, 0.3s) ease;
+}
+
+.anim-scroll-in.anim-from-below {
+  transform: translateY(20px);
+}
+
+.anim-scroll-in.anim-from-above {
+  transform: translateY(-20px);
+}
+
+.anim-scroll-in.anim-scroll-in-active {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+/* Staggered line animations */
+.anim-stagger-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.anim-line {
+  display: block;
+  transition: transform 0.35s ease, opacity 0.35s ease;
+}
+
+.anim-line-hidden {
+  opacity: 0;
+}
+
+.anim-line-hidden.anim-from-below {
+  transform: translateY(12px);
+}
+
+.anim-line-hidden.anim-from-above {
+  transform: translateY(-12px);
+}
+
+.anim-line-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+/* Flash highlight animation */
+@keyframes flash-highlight {
+  0%, 100% {
+    background: rgba(255, 183, 3, 0.2);
+  }
+  50% {
+    background: rgba(255, 183, 3, 0.5);
+    box-shadow: 0 0 8px rgba(255, 183, 3, 0.6);
+  }
+}
+
+.anim-flash {
+  animation: flash-highlight 0.4s ease 2;
+}
+
+/* Typewriter container */
+.anim-typewriter-container {
+  display: flex;
+  flex-direction: column;
+}
+
+.anim-typewriter-line {
+  display: block;
+  min-height: 1.7em;
+}
+
+/* Fade animations */
+.anim-fade-out {
+  opacity: 0.3;
+  transition: opacity 0.2s ease;
+}
+
+.anim-fade-in {
+  opacity: 1;
+  transition: opacity 0.3s ease;
+}
+
+/* =============================================================================
+   CSV ROW STYLING
+   ============================================================================= */
+
+.csv-row {
+  display: block;
+  transition: opacity 0.4s ease, transform 0.4s ease;
+  position: relative;
+}
+
+/* Row scroll-out animation */
+.csv-row-scroll-out {
+  animation: row-scroll-out 0.4s ease forwards;
+  animation-delay: var(--scroll-out-delay, 0ms);
+}
+
+.csv-row-scroll-out.csv-row-scroll-up {
+  animation-name: row-scroll-out-up;
+}
+
+.csv-row-scroll-out.csv-row-scroll-down {
+  animation-name: row-scroll-out-down;
+}
+
+@keyframes row-scroll-out-up {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-20px);
+  }
+}
+
+@keyframes row-scroll-out-down {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+}
+
+/* Faded state for cross-border rows that pass the filter */
+.csv-row-faded {
+  opacity: 0.35;
+}
+
+/* Highlighted state for domestic rows that fail the filter */
+.csv-row-highlight-excluded {
+  background: linear-gradient(90deg, rgba(255, 183, 3, 0.15) 0%, rgba(255, 183, 3, 0.1) 100%);
+  border-radius: 4px 0 0 4px;
+  padding: 0 4px;
+  margin: 0 -4px;
+  /* Extend highlight across full scrollable width */
+  padding-right: 3000px;
+  margin-right: -3000px;
+}
+
+/* Strikethrough animation for excluded rows */
+.csv-row-strikethrough {
+  position: relative;
+}
+
+.csv-row-strikethrough::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: -16px;
+  /* Extend far beyond content to cover full scrollable width */
+  width: 3000px;
+  height: 2px;
+  background: linear-gradient(90deg, #ff6b6b 0%, #f87171 30%, #ff6b6b 100%);
+  border-radius: 1px;
+  transform: scaleX(0);
+  transform-origin: left center;
+  animation: strikethrough-draw 0.6s ease forwards;
+  animation-delay: var(--strikethrough-delay, 0ms);
+}
+
+@keyframes strikethrough-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Static excluded state (final state) */
+.csv-row-excluded {
+  opacity: 0.5;
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 100, 100, 0.6);
+}
+
+.csv-mark-excluded {
+  background: rgba(255, 100, 100, 0.25) !important;
+  color: #ff6b6b !important;
+}
+
+.has-tooltip {
+  cursor: help;
+  position: relative;
+}
+
+.has-tooltip::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: currentColor;
+  opacity: 0.4;
+  border-radius: 1px;
+}
+
+/* =============================================================================
+   DIFF STYLING ENHANCEMENTS
+   ============================================================================= */
+
+.diff-line {
+  display: block;
+}
+
+.diff-remove {
+  color: #f7a8a0;
+}
+
+.diff-add {
+  color: #a7f3d0;
+}
+
+.diff-rule {
+  color: #8b9898;
+  font-size: 0.9em;
+  font-style: italic;
+  margin-bottom: 2px;
+}
+
+.diff-more {
+  color: #6b7280;
+  font-style: italic;
+  margin-top: 4px;
+}
+
+/* =============================================================================
+   TOOLTIP SYSTEM
+   ============================================================================= */
+
+.preview-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: 280px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(30, 44, 44, 0.96);
+  backdrop-filter: blur(8px);
+  color: #f3f2ef;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+  pointer-events: none;
+}
+
+.preview-tooltip.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.preview-tooltip.tooltip-above {
+  transform: translateY(-4px);
+}
+
+.preview-tooltip.tooltip-above.is-visible {
+  transform: translateY(0);
+}
+
+.tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.tooltip-icon {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tooltip-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.tooltip-body {
+  color: #b8c4c4;
+}
+
+/* Tooltip type variants */
+.tooltip-error .tooltip-icon {
+  background: #f87171;
+}
+
+.tooltip-error .tooltip-title {
+  color: #fca5a5;
+}
+
+.tooltip-warning .tooltip-icon {
+  background: #fbbf24;
+}
+
+.tooltip-warning .tooltip-title {
+  color: #fcd34d;
+}
+
+.tooltip-excluded .tooltip-icon {
+  background: #94a3b8;
+}
+
+.tooltip-excluded .tooltip-title {
+  color: #cbd5e1;
+}
+
+.tooltip-included .tooltip-icon {
+  background: #34d399;
+}
+
+.tooltip-included .tooltip-title {
+  color: #6ee7b7;
+}
+
+.tooltip-success .tooltip-icon {
+  background: #22c55e;
+}
+
+.tooltip-success .tooltip-title {
+  color: #86efac;
+}
+
+.tooltip-info .tooltip-icon {
+  background: #60a5fa;
+}
+
+.tooltip-info .tooltip-title {
+  color: #93c5fd;
+}
+
+/* Arrow indicator */
+.preview-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 0 6px 6px 6px;
+  border-style: solid;
+  border-color: transparent transparent rgba(30, 44, 44, 0.96) transparent;
+}
+
+.preview-tooltip.tooltip-above::before {
+  top: auto;
+  bottom: -6px;
+  border-width: 6px 6px 0 6px;
+  border-color: rgba(30, 44, 44, 0.96) transparent transparent transparent;
 }
