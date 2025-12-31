@@ -863,6 +863,38 @@ progress::-moz-progress-bar {
   color: var(--ink-muted);
 }
 
+/* Rule panel animations */
+.rule-element-exit {
+  animation: rule-slide-out 0.18s ease-in forwards;
+}
+
+.rule-element-enter {
+  animation: rule-slide-in 0.25s ease-out both;
+  animation-delay: var(--rule-delay, 0ms);
+}
+
+@keyframes rule-slide-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes rule-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .rule-link {
   text-decoration: none;
   font-weight: 600;

@@ -1434,6 +1434,69 @@ function renderMetrics(metrics, animate) {
   });
 }
 
+// Store current rule content for animation comparison
+let currentRuleTitle = '';
+
+function animateRulePanelUpdate(newRule) {
+  if (!newRule) return;
+
+  const hasChanges = currentRuleTitle !== newRule.title;
+
+  if (hasChanges && currentRuleTitle !== '') {
+    // Animate out existing content
+    ruleTitle.classList.add('rule-element-exit');
+    ruleBody.classList.add('rule-element-exit');
+    ruleList.querySelectorAll('li').forEach(li => li.classList.add('rule-element-exit'));
+
+    // After exit animation completes, update and animate in
+    setTimeout(() => {
+      renderRulePanel(newRule, true);
+      currentRuleTitle = newRule.title;
+    }, 180);
+  } else {
+    // No animation needed, just render
+    renderRulePanel(newRule, false);
+    currentRuleTitle = newRule.title;
+  }
+}
+
+function renderRulePanel(rule, animate) {
+  // Clear exit animations
+  ruleTitle.classList.remove('rule-element-exit');
+  ruleBody.classList.remove('rule-element-exit');
+  ruleList.classList.remove('rule-element-exit');
+
+  // Set title
+  ruleTitle.textContent = rule.title;
+  if (animate) {
+    ruleTitle.style.setProperty('--rule-delay', '0ms');
+    ruleTitle.classList.add('rule-element-enter');
+  } else {
+    ruleTitle.classList.remove('rule-element-enter');
+  }
+
+  // Set body
+  ruleBody.textContent = rule.body;
+  if (animate) {
+    ruleBody.style.setProperty('--rule-delay', '80ms');
+    ruleBody.classList.add('rule-element-enter');
+  } else {
+    ruleBody.classList.remove('rule-element-enter');
+  }
+
+  // Set list items with staggered animation
+  ruleList.innerHTML = "";
+  rule.list.forEach((item, index) => {
+    const li = document.createElement("li");
+    li.textContent = item;
+    if (animate) {
+      li.style.setProperty('--rule-delay', `${160 + index * 60}ms`);
+      li.classList.add('rule-element-enter');
+    }
+    ruleList.appendChild(li);
+  });
+}
+
 function setPreview(step, animate = false) {
   previewTitle.textContent = step.title;
   previewMeta.textContent = fillTemplate(step.meta);
@@ -1479,14 +1542,8 @@ function setPreview(step, animate = false) {
   // Animate metrics transition
   animateMetricsUpdate(step.metrics);
 
-  ruleTitle.textContent = step.rule.title;
-  ruleBody.textContent = step.rule.body;
-  ruleList.innerHTML = "";
-  step.rule.list.forEach((item) => {
-    const li = document.createElement("li");
-    li.textContent = item;
-    ruleList.appendChild(li);
-  });
+  // Animate rule panel transition
+  animateRulePanelUpdate(step.rule);
 
   requestAnimationFrame(updatePreviewOffset);
 }
