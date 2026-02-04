@@ -275,20 +275,64 @@ fn issue(level: IssueLevel, message: &str) -> PreflightIssue {
 }
 
 fn is_valid_amount(amount: &str) -> bool {
-    let mut parts = amount.split('.');
+    // Handle optional negative sign
+    let amount_str = amount.strip_prefix('-').unwrap_or(amount);
+    
+    let mut parts = amount_str.split('.');
     let whole = match parts.next() {
-        Some(part) if !part.is_empty() => part,
+        Some(part) => part,
         _ => return false,
     };
-    if !whole.chars().all(|ch| ch.is_ascii_digit()) {
+    
+    // Whole part can be empty (e.g., ".12") or contain only digits
+    if !whole.is_empty() && !whole.chars().all(|ch| ch.is_ascii_digit()) {
         return false;
     }
+    
+    // Must have exactly one decimal part with exactly 2 digits
     match parts.next() {
-        None => true,
-        Some(frac) if frac.len() <= 2 && frac.chars().all(|ch| ch.is_ascii_digit()) => {
-            parts.next().is_none()
+        Some(frac) if frac.len() == 2 && frac.chars().all(|ch| ch.is_ascii_digit()) => {
+            parts.next().is_none()  // Ensure no more decimal points
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_amounts() {
+        // Valid positive amounts with exactly 2 decimal places
+        assert!(is_valid_amount("123.45"));
+        assert!(is_valid_amount("0.00"));
+        assert!(is_valid_amount("1000.99"));
+        assert!(is_valid_amount(".12"));  // Empty whole part
+        
+        // Valid negative amounts
+        assert!(is_valid_amount("-123.45"));
+        assert!(is_valid_amount("-0.00"));
+        assert!(is_valid_amount("-1000.99"));
+    }
+
+    #[test]
+    fn test_invalid_amounts() {
+        // Invalid: wrong number of decimal places
+        assert!(!is_valid_amount("123.4"));   // Only 1 decimal place
+        assert!(!is_valid_amount("123.456")); // 3 decimal places
+        assert!(!is_valid_amount("123"));     // No decimal point
+        
+        // Invalid: non-numeric characters
+        assert!(!is_valid_amount("12a.45"));
+        assert!(!is_valid_amount("123.4a"));
+        
+        // Invalid: multiple decimal points
+        assert!(!is_valid_amount("123.45.67"));
+        
+        // Invalid: negative sign in wrong position
+        assert!(!is_valid_amount("123-.45"));
+        assert!(!is_valid_amount("123.45-"));
     }
 }
 
