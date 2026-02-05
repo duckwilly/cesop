@@ -125,7 +125,7 @@ fn validate_record(record: &PaymentRecord, issues: &mut Vec<PreflightIssue>) {
     if !is_valid_amount(&record.amount) {
         issues.push(issue(
             IssueLevel::Error,
-            "amount must be a decimal with two digits",
+            "amount must be a parseable decimal (renderer normalizes to 2 decimals)",
         ));
     }
     if !is_valid_currency(&record.currency) {
@@ -275,26 +275,14 @@ fn issue(level: IssueLevel, message: &str) -> PreflightIssue {
 }
 
 fn is_valid_amount(amount: &str) -> bool {
-    // Handle optional negative sign
-    let amount_str = amount.strip_prefix('-').unwrap_or(amount);
-    
-    let mut parts = amount_str.split('.');
-    let whole = match parts.next() {
-        Some(part) => part,
-        _ => return false,
-    };
-    
-    // Whole part can be empty (e.g., ".12") or contain only digits
-    if !whole.is_empty() && !whole.chars().all(|ch| ch.is_ascii_digit()) {
+    let trimmed = amount.trim();
+    if trimmed.is_empty() {
         return false;
     }
-    
-    // Must have exactly one decimal part with exactly 2 digits
-    match parts.next() {
-        Some(frac) if frac.len() == 2 && frac.chars().all(|ch| ch.is_ascii_digit()) => {
-            parts.next().is_none()  // Ensure no more decimal points
-        }
-        _ => false,
+
+    match trimmed.parse::<f64>() {
+        Ok(value) => value.is_finite(),
+        Err(_) => false,
     }
 }
 
@@ -304,12 +292,15 @@ mod tests {
 
     #[test]
     fn test_valid_amounts() {
-        // Valid positive amounts with exactly 2 decimal places
+        // Valid positive amounts
         assert!(is_valid_amount("123.45"));
         assert!(is_valid_amount("0.00"));
         assert!(is_valid_amount("1000.99"));
         assert!(is_valid_amount(".12"));  // Empty whole part
-        
+        assert!(is_valid_amount("123"));
+        assert!(is_valid_amount("123.4"));
+        assert!(is_valid_amount("123.456"));
+
         // Valid negative amounts
         assert!(is_valid_amount("-123.45"));
         assert!(is_valid_amount("-0.00"));
@@ -318,21 +309,21 @@ mod tests {
 
     #[test]
     fn test_invalid_amounts() {
-        // Invalid: wrong number of decimal places
-        assert!(!is_valid_amount("123.4"));   // Only 1 decimal place
-        assert!(!is_valid_amount("123.456")); // 3 decimal places
-        assert!(!is_valid_amount("123"));     // No decimal point
-        
         // Invalid: non-numeric characters
         assert!(!is_valid_amount("12a.45"));
         assert!(!is_valid_amount("123.4a"));
-        
+
         // Invalid: multiple decimal points
         assert!(!is_valid_amount("123.45.67"));
-        
+
         // Invalid: negative sign in wrong position
         assert!(!is_valid_amount("123-.45"));
         assert!(!is_valid_amount("123.45-"));
+
+        // Invalid: non-finite values
+        assert!(!is_valid_amount("NaN"));
+        assert!(!is_valid_amount("inf"));
+        assert!(!is_valid_amount("-inf"));
     }
 }
 
