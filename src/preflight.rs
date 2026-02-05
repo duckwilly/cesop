@@ -125,7 +125,7 @@ fn validate_record(record: &PaymentRecord, issues: &mut Vec<PreflightIssue>) {
     if !is_valid_amount(&record.amount) {
         issues.push(issue(
             IssueLevel::Error,
-            "amount must be a decimal with two digits",
+            "amount must be a parseable decimal (renderer normalizes to 2 decimals)",
         ));
     }
     if !is_valid_currency(&record.currency) {
@@ -275,20 +275,55 @@ fn issue(level: IssueLevel, message: &str) -> PreflightIssue {
 }
 
 fn is_valid_amount(amount: &str) -> bool {
-    let mut parts = amount.split('.');
-    let whole = match parts.next() {
-        Some(part) if !part.is_empty() => part,
-        _ => return false,
-    };
-    if !whole.chars().all(|ch| ch.is_ascii_digit()) {
+    let trimmed = amount.trim();
+    if trimmed.is_empty() {
         return false;
     }
-    match parts.next() {
-        None => true,
-        Some(frac) if frac.len() <= 2 && frac.chars().all(|ch| ch.is_ascii_digit()) => {
-            parts.next().is_none()
-        }
-        _ => false,
+
+    match trimmed.parse::<f64>() {
+        Ok(value) => value.is_finite(),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_amounts() {
+        // Valid positive amounts
+        assert!(is_valid_amount("123.45"));
+        assert!(is_valid_amount("0.00"));
+        assert!(is_valid_amount("1000.99"));
+        assert!(is_valid_amount(".12"));  // Empty whole part
+        assert!(is_valid_amount("123"));
+        assert!(is_valid_amount("123.4"));
+        assert!(is_valid_amount("123.456"));
+
+        // Valid negative amounts
+        assert!(is_valid_amount("-123.45"));
+        assert!(is_valid_amount("-0.00"));
+        assert!(is_valid_amount("-1000.99"));
+    }
+
+    #[test]
+    fn test_invalid_amounts() {
+        // Invalid: non-numeric characters
+        assert!(!is_valid_amount("12a.45"));
+        assert!(!is_valid_amount("123.4a"));
+
+        // Invalid: multiple decimal points
+        assert!(!is_valid_amount("123.45.67"));
+
+        // Invalid: negative sign in wrong position
+        assert!(!is_valid_amount("123-.45"));
+        assert!(!is_valid_amount("123.45-"));
+
+        // Invalid: non-finite values
+        assert!(!is_valid_amount("NaN"));
+        assert!(!is_valid_amount("inf"));
+        assert!(!is_valid_amount("-inf"));
     }
 }
 
